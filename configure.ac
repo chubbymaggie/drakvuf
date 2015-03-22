@@ -141,15 +141,21 @@ AC_ARG_ENABLE([hardening],
     [Enable compiler and linker options to frustrate memory corruption exploits @<:@yes@:>@])],
   [hardening="$enableval"],
   [hardening="yes"])
+AM_CONDITIONAL([HARDENING], [test x$hardening = xyes])  
   
 AC_ARG_ENABLE([debug],
   [AS_HELP_STRING([--enable-debug],
     [Enable verbose debug output to be compiled @<:@no@:>@])],
   [debug="$enableval"],
   [debug="no"])   
-
 AM_CONDITIONAL([DEBUG], [test x$debug = xyes])
-AM_CONDITIONAL([HARDENING], [test x$hardening = xyes])  
+
+AC_ARG_WITH([xmlrpc],
+      [AS_HELP_STRING([--with-xmlrpc],
+         [Build DRAKVUF with Honeybrid (xmlrpc) support])],
+      [with_xmlrpc=$withval],
+      [with_xmlrpc=no])
+AM_CONDITIONAL([XMLRPC], [test x"$with_xmlrpc" = xyes])
 
 HARDEN_CFLAGS=""
 HARDEN_LDFLAGS=""
@@ -210,6 +216,7 @@ PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.28], [], [AC_ERROR([glib-2.0 (version 2
 AC_CHECK_LIB(glib-2.0, [g_malloc0, g_tree_lookup], [], [AC_ERROR([glib-2.0 library is not functional!])]) 
 
 PKG_CHECK_MODULES([VMI], [libvmi >= 0.11], [], [AC_ERROR([LibVMI not found])])
+AC_CHECK_HEADERS([libvmi/events.h], [], [AC_ERROR([LibVMI doesn't have events support.])], [#include <libvmi/libvmi.h>])
 AC_CHECK_LIB(vmi, [vmi_register_event, vmi_step_event, vmi_read], [], [AC_ERROR([LibVMI doesn't have events support.])])
 
 PKG_CHECK_MODULES([JANSSON], [jansson >= 2.1], [], [AC_ERROR([LibJANSSON not found])])
@@ -245,21 +252,23 @@ AC_CHECK_LIB([xenctrl],
 	[xc_interface_open, xc_memshr_control, xc_memshr_nominate_gfn, xc_memshr_share_gfns], 
 	[], [AC_ERROR([XenCtrl is unusable! Do you have Xen 4.2+ installed?])])
 
-AC_PATH_PROG(XMLRPC_C_CONFIG, xmlrpc-c-config)
-if test "x$XMLRPC_C_CONFIG" != "x"; then
+if test "x$with_xmlrpc" != "xno"; then
+    AC_PATH_PROG(XMLRPC_C_CONFIG, xmlrpc-c-config)
+    if test "x$XMLRPC_C_CONFIG" != "x"; then
 
-    PKG_CHECK_MODULES([CURL], [libcurl], [
+        PKG_CHECK_MODULES([CURL], [libcurl], [
     
-        XMLRPC_CLIENT_LIBS=$($XMLRPC_C_CONFIG client --libs)
-        XMLRPC_CLIENT_CFLAGS=$($XMLRPC_C_CONFIG client --cflags)
+            XMLRPC_CLIENT_LIBS=$($XMLRPC_C_CONFIG client --libs)
+            XMLRPC_CLIENT_CFLAGS=$($XMLRPC_C_CONFIG client --cflags)
     
-        AC_DEFINE(HAVE_XMLRPC, 1, "Working XMLRPC C library found")
+            AC_DEFINE(HAVE_XMLRPC, 1, "Working XMLRPC C library found")
     
-        AC_SUBST(XMLRPC_CLIENT_LIBS)
-        AC_SUBST(XMLRPC_CLIENT_CFLAGS)
+            AC_SUBST(XMLRPC_CLIENT_LIBS)
+            AC_SUBST(XMLRPC_CLIENT_CFLAGS)
     
-    ], [AC_ERROR(No CURL installed)])
+        ], [AC_ERROR(No CURL installed)])
 
+    fi
 fi
 
 AC_CONFIG_FILES([Makefile src/Makefile])
