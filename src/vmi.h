@@ -160,10 +160,18 @@ enum offset {
     KPRCB_CURRENTTHREAD,
 
     KTHREAD_PROCESS,
+    KTHREAD_INITIALSTACK,
+    KTHREAD_STACKLIMIT,
+    KTHREAD_APCSTATE,
     KTHREAD_TRAPFRAME,
+    KTHREAD_APCQUEUEABLE,
 
-    KTRAP_FRAME_EBP,
     KTRAP_FRAME_RIP,
+
+    KAPC_APCLISTENTRY,
+
+    NT_TIB_STACKBASE,
+    NT_TIB_STACKLIMIT,
 
     ETHREAD_CID,
     CLIENT_ID_UNIQUETHREAD,
@@ -207,9 +215,15 @@ static const char *offset_names[OFFSET_MAX][2] = {
     [KPCR_PRCBDATA] = {"_KPCR", "PrcbData" },
     [KPRCB_CURRENTTHREAD] = { "_KPRCB", "CurrentThread" },
     [KTHREAD_PROCESS] = {"_KTHREAD", "Process" },
+    [KTHREAD_INITIALSTACK] = {"_KTHREAD", "InitialStack"},
+    [KTHREAD_STACKLIMIT] = {"_KTHREAD", "StackLimit"},
     [KTHREAD_TRAPFRAME] = {"_KTHREAD", "TrapFrame" },
-    [KTRAP_FRAME_EBP] = {"_KTRAP_FRAME", "Ebp" },
+    [KTHREAD_APCSTATE] = {"_KTHREAD", "ApcState" },
+    [KTHREAD_APCQUEUEABLE] = {"_KTHREAD", "ApcQueueable"},
+    [KAPC_APCLISTENTRY] = {"_KAPC", "ApcListEntry" },
     [KTRAP_FRAME_RIP] = {"_KTRAP_FRAME", "Rip" },
+    [NT_TIB_STACKBASE] = { "_NT_TIB", "StackBase" },
+    [NT_TIB_STACKLIMIT] = { "_NT_TIB", "StackLimit" },
     [ETHREAD_CID] = {"_ETHREAD", "Cid" },
     [CLIENT_ID_UNIQUETHREAD] = {"_CLIENT_ID", "UniqueThread" },
     [OBJECT_HEADER_TYPEINDEX] = { "_OBJECT_HEADER", "TypeIndex" },
@@ -242,16 +256,15 @@ static const char *size_names[SIZE_LIST_MAX] = {
 // Aligned object sizes
 size_t struct_sizes[SIZE_LIST_MAX];
 
-void vmi_build_guid_tree(honeymon_t *honeymon);
-void inject_traps(honeymon_clone_t *clonec);
+void inject_traps(drakvuf_t *drakvuf);
 
-void *clone_vmi_thread(void *input);
-void clone_vmi_init(honeymon_clone_t *clone);
-void close_vmi_clone(honeymon_clone_t *clone);
+void drakvuf_loop(drakvuf_t *drakvuf);
+void init_vmi(drakvuf_t *drakvuf);
+void close_vmi(drakvuf_t *drakvuf);
 
-void trap_guard(vmi_instance_t vmi, vmi_event_t *event);
-void vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event);
-void vmi_save_and_reset_trap(vmi_instance_t vmi, vmi_event_t *event);
+event_response_t trap_guard(vmi_instance_t vmi, vmi_event_t *event);
+event_response_t vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event);
+event_response_t vmi_save_and_reset_trap(vmi_instance_t vmi, vmi_event_t *event);
 
 void free_guid_lookup(gpointer s);
 void free_symbolwrap(gpointer z);

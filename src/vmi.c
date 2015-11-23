@@ -117,19 +117,19 @@
 #include <libvmi/libvmi.h>
 #include <libvmi/peparse.h>
 
-#include "structures.h"
-
+#include "drakvuf.h"
 #include "win-symbols.h"
 #include "vmi.h"
 #include "vmi-poolmon.h"
 #include "file_extractor.h"
 #include "xen_helper.h"
 #include "rdtsc.h"
+#include "output.h"
 
 static uint64_t read_count, write_count, x_count;
 
 // This is the callback when an int3 or a read event happens
-void vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
+event_response_t vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
 
     /*reg_t tsc, deltatsc;
      deltatsc = rdtsc();
@@ -140,7 +140,7 @@ void vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
 
     if (event->type == VMI_EVENT_INTERRUPT) {
         pa = (event->interrupt_event.gfn << 12) + event->interrupt_event.offset;
-        //printf("Resetting trap @ 0x%lx.\n", pa);
+        //PRINT_DEBUG("Resetting trap @ 0x%lx.\n", pa);
         vmi_write_8_pa(vmi, pa, &trap);
     } else {
 
@@ -156,17 +156,18 @@ void vmi_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
         ghashtable_foreach(containers, i, key, s)
         {
             if (pa > s->pa - 7 && pa <= s->pa + 7) {
-                //printf("Violation @ 0x%lx. Resetting trap @ 0x%lx.\n", pa, s->pa);
+                //PRINT_DEBUG("Violation @ 0x%lx. Resetting trap @ 0x%lx.\n", pa, s->pa);
                 vmi_write_8_pa(vmi, s->pa, &trap);
             }
         }
     }
 
     //vmi_set_vcpureg(vmi, tsc+(rdtsc()-deltatsc), TSC, event->vcpu_id);
+    return 0;
 }
 
 // This is the callback when an write event happens
-void vmi_save_and_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
+event_response_t vmi_save_and_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
 
     vmi_register_event(vmi, event);
     uint8_t trap = TRAP;
@@ -186,9 +187,10 @@ void vmi_save_and_reset_trap(vmi_instance_t vmi, vmi_event_t *event) {
             }
         }
     }
+    return 0;
 }
 
-void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
+event_response_t trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
 
     /*reg_t tsc, deltatsc;
      deltatsc = rdtsc();
@@ -201,7 +203,7 @@ void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
     vmi_clear_event(vmi, event);
 
     if (event->mem_event.out_access & VMI_MEMACCESS_R) {
-        //printf("Read memaccess @ 0x%lx. Page %lu.\n", pa, event->mem_event.gfn);
+        //PRINT_DEBUG("Read memaccess @ 0x%lx. Page %lu.\n", pa, event->mem_event.gfn);
         //read_count++;
         GHashTable *containers = event->data;
         GHashTableIter i;
@@ -210,14 +212,14 @@ void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
         ghashtable_foreach(containers, i, key, s) {
             if (s && s->sID == SYMBOLWRAP) {
                 if (pa > s->pa - 7 && pa <= s->pa + 7) {
-                    printf("** Mem event removing trap 0x%lx -> %s!%s\n", s->pa,
+                    PRINT_DEBUG("** Mem event removing trap 0x%lx -> %s!%s\n", s->pa,
                             s->symbol.config->name, s->symbol.symbol->name);
                     vmi_write_8_pa(vmi, s->pa, &s->symbol.backup);
                 }
             }
             if (s && s->sID == POOL_LOOKUP) {
                 if (pa > s->pa - 7 && pa <= s->pa + 7) {
-                    printf("** Mem event removing trap pool return 0x%lx\n",
+                    PRINT_DEBUG("** Mem event removing trap pool return 0x%lx\n",
                             s->pa);
                     vmi_write_8_pa(vmi, s->pa, &s->pool.backup);
                 }
@@ -229,7 +231,7 @@ void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
 
     if (event->mem_event.out_access & VMI_MEMACCESS_W) {
         //write_count++;
-        printf("Write memaccess @ 0x%lx. Page %lu.\n", pa,
+        PRINT_DEBUG("Write memaccess @ 0x%lx. Page %lu.\n", pa,
                 event->mem_event.gfn);
 
         GHashTable *containers = event->data;
@@ -237,19 +239,19 @@ void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
         addr_t *key = NULL;
         struct memevent *s = NULL;
         ghashtable_foreach(containers, i, key, s) {
-            /*printf("Write memaccess @ 0x%lx. Page %lu. Symbol: %s!%s\n", pa,
+            /*PRINT_DEBUG("Write memaccess @ 0x%lx. Page %lu. Symbol: %s!%s\n", pa,
                     event->mem_event.gfn, s->symbol.config->name,
                     s->symbol.symbol->name);*/
             if (s && s->sID == SYMBOLWRAP) {
                 if (pa > s->pa - 7 && pa <= s->pa) {
-                    printf("** Mem event removing trap 0x%lx -> %s!%s\n", s->pa,
+                    PRINT_DEBUG("** Mem event removing trap 0x%lx -> %s!%s\n", s->pa,
                             s->symbol.config->name, s->symbol.symbol->name);
                     vmi_write_8_pa(vmi, s->pa, &s->symbol.backup);
                 }
             }
             if (s && s->sID == POOL_LOOKUP) {
                 if (pa > s->pa - 7 && pa <= s->pa) {
-                    printf("** Mem event removing trap 0x%lx\n", s->pa);
+                    PRINT_DEBUG("** Mem event removing trap 0x%lx\n", s->pa);
                     vmi_write_8_pa(vmi, s->pa, &s->pool.backup);
                 }
             }
@@ -259,35 +261,29 @@ void trap_guard(vmi_instance_t vmi, vmi_event_t *event) {
     }
 
     //vmi_set_vcpureg(vmi, tsc+(rdtsc()-deltatsc), TSC, event->vcpu_id);
+    return 0;
 }
 
-void int3_cb(vmi_instance_t vmi, vmi_event_t *event) {
+event_response_t int3_cb(vmi_instance_t vmi, vmi_event_t *event) {
 
     /*reg_t tsc, deltatsc;
      deltatsc = rdtsc();
      vmi_get_vcpureg(vmi, &tsc, TSC, event->vcpu_id);*/
 
-    reg_t cr3;
-    vmi_get_vcpureg(vmi, &cr3, CR3, event->vcpu_id);
+    reg_t cr3 = event->regs.x86->cr3;
 
     char *ts;
     NOW(&ts);
 
-    honeymon_clone_t *clone = event->data;
+    drakvuf_t *drakvuf = event->data;
     addr_t pa = (event->interrupt_event.gfn << 12)
             + event->interrupt_event.offset;
-    struct symbolwrap *s = g_hash_table_lookup(clone->pa_lookup, &pa);
+    struct symbolwrap *s = g_hash_table_lookup(drakvuf->pa_lookup, &pa);
 
     if (s) {
-        /*printf(
-                "%s BP CR3: 0x%"PRIx64" Page %"PRIi64" PA=0x%"PRIx64" RIP=0x%"PRIx64" Symbol: %s!%s. Backup 0x%"PRIx8"\n",
-                ts, cr3, pa >> 12, pa, event->interrupt_event.gla,
-                s->config->name, s->symbol->name, s->backup);*/
-
-        printf(
-                "CR3=0x%lx RIP=0x%"PRIx64" %s!%s\n",
-                cr3, event->interrupt_event.gla,
-                s->config->name, s->symbol->name);
+        PRINT(drakvuf, INT3_CB_STRING,
+              cr3, event->interrupt_event.gla,
+              s->config->name, s->symbol->name);
 
         //if (!strcmp(s->config->name, "ntkrnlmp")
         //        || !strcmp(s->config->name, "ntkrpamp")) {
@@ -312,7 +308,7 @@ void int3_cb(vmi_instance_t vmi, vmi_event_t *event) {
          // TODO x86
          reg_t handle;
          vmi_get_vcpureg(vmi, &handle, RCX, event->vcpu_id);
-         grab_file_by_handle(clone, event, cr3, handle);
+         grab_file_by_handle(drakvuf, event, cr3, handle);
          }*/
 
         if (!strcmp(s->symbol->name, "NtDeleteFile")
@@ -328,12 +324,12 @@ void int3_cb(vmi_instance_t vmi, vmi_event_t *event) {
         event->interrupt_event.reinject = 0;
         vmi_step_event(vmi, event, event->vcpu_id, 1, vmi_reset_trap);
     } else {
-        GHashTable *pool_rets = g_hash_table_lookup(clone->pool_lookup, &pa);
+        GHashTable *pool_rets = g_hash_table_lookup(drakvuf->pool_lookup, &pa);
         if (pool_rets) {
             pool_alloc_return(vmi, event, pa, cr3, ts, pool_rets);
             event->interrupt_event.reinject = 0;
         } else {
-            printf(
+            fprintf(stderr,
                     "%s Unknown Int3 event: CR3: 0x%"PRIx64" PA=0x%"PRIx64" RIP=0x%"PRIx64"\n",
                     ts, cr3, pa, event->interrupt_event.gla);
             event->interrupt_event.reinject = 1;
@@ -342,11 +338,12 @@ void int3_cb(vmi_instance_t vmi, vmi_event_t *event) {
 
     g_free(ts);
     //vmi_set_vcpureg(vmi, tsc+(rdtsc()-deltatsc), TSC, event->vcpu_id);
+    return 0;
 }
 
-void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct sym_config *sym_config) {
+void inject_traps_pe(drakvuf_t *drakvuf, addr_t vaddr, uint32_t pid) {
 
-    vmi_instance_t vmi = clone->vmi;
+    vmi_instance_t vmi = drakvuf->vmi;
 
     // So that LibVMI can find the _EPROCESS appropriately in pid2dtb
     if(pid == 0) {
@@ -358,9 +355,9 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
     uint32_t i = 0;
     uint64_t trapped = 0;
 
-    for (; i < sym_config->sym_count; i++) {
+    for (; i < drakvuf->sym_config->sym_count; i++) {
 
-        const struct symbol *symbol = &sym_config->syms[i];
+        const struct symbol *symbol = &drakvuf->sym_config->syms[i];
 
         //Kernel
         if (
@@ -377,29 +374,29 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
 
         // get pa
         addr_t pa = vmi_pagetable_lookup(vmi, dtb,
-                vaddr + sym_config->syms[i].rva);
+                vaddr + drakvuf->sym_config->syms[i].rva);
 
         if (!pa)
             continue;
 
         // check if already marked
-        if (g_hash_table_lookup(clone->pa_lookup, &pa))
+        if (g_hash_table_lookup(drakvuf->pa_lookup, &pa))
             continue;
 
         // backup current byte
         uint8_t byte = 0;
         vmi_read_8_pa(vmi, pa, &byte);
         if (byte == TRAP) {
-            printf("\n\n** SKIPPING, PA IS ALREADY TRAPPED @ 0x%lx %s!%s**\n\n",
-                    pa, sym_config->name,
-                    sym_config->syms[i].name);
+            PRINT_DEBUG("\n\n** SKIPPING, PA IS ALREADY TRAPPED @ 0x%lx %s!%s**\n\n",
+                    pa, drakvuf->sym_config->name,
+                    drakvuf->sym_config->syms[i].name);
             continue;
         }
 
         struct memevent *container = g_malloc0(sizeof(struct memevent));
         container->sID = SYMBOLWRAP;
-        container->symbol.clone = clone;
-        container->symbol.config = sym_config;
+        container->symbol.drakvuf = drakvuf;
+        container->symbol.config = drakvuf->sym_config;
         container->symbol.symbol = symbol;
         container->symbol.backup = byte;
         container->pa = pa;
@@ -411,7 +408,7 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
         // This has to happen before the MEMEVENT is registered because
         // the MFN is yet to be allocated on which we want the MEMEVENT set on
         if (VMI_FAILURE == vmi_write_8_pa(vmi, container->pa, &trap)) {
-            printf("FAILED TO INJECT TRAP @ 0x%lx !\n", container->pa);
+            PRINT_DEBUG("FAILED TO INJECT TRAP @ 0x%lx !\n", container->pa);
             continue;
         }
 
@@ -421,7 +418,7 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
             SETUP_MEM_EVENT(container->guard, container->pa, VMI_MEMEVENT_PAGE,
                     VMI_MEMACCESS_RW, trap_guard);
             if (VMI_FAILURE == vmi_register_event(vmi, container->guard)) {
-                printf("*** FAILED TO REGISTER MEMORY GUARD @ PAGE %lu ***\n",
+                PRINT_DEBUG("*** FAILED TO REGISTER MEMORY GUARD @ PAGE %lu ***\n",
                         pa >> 12);
                 free(container->guard);
                 free(container);
@@ -429,9 +426,9 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
             }
             container->guard->data = g_hash_table_new(g_int64_hash,
                     g_int64_equal);
-            printf("\t\tNew memory event trap set on page %lu\n", pa >> 12);
+            PRINT_DEBUG("\t\tNew memory event trap set on page %lu\n", pa >> 12);
         } else {
-            printf("\t\tMemory event trap already set on page %lu\n", pa >> 12);
+            PRINT_DEBUG("\t\tMemory event trap already set on page %lu\n", pa >> 12);
         }
 
         struct memevent *test = g_hash_table_lookup(container->guard->data,
@@ -440,34 +437,34 @@ void inject_traps_pe(honeymon_clone_t *clone, addr_t vaddr, uint32_t pid, struct
             g_hash_table_insert(container->guard->data, &container->pa,
                     container);
         } else if (test->sID == SYMBOLWRAP) {
-            printf("Address is already guarded\n");
+            PRINT_DEBUG("Address is already guarded\n");
         } else {
-            printf("Address is trapped by another feature! ERROR/TODO!\n");
+            PRINT_DEBUG("Address is trapped by another feature! ERROR/TODO!\n");
         }
 
         // save trap location into lookup tree
-        g_hash_table_insert(clone->pa_lookup, g_memdup(&container->pa, 8),
+        g_hash_table_insert(drakvuf->pa_lookup, g_memdup(&container->pa, 8),
                 &container->symbol);
 
         trapped++;
-        printf(
+        PRINT_DEBUG(
                 "\t\tTrap added @ VA 0x%lx PA 0x%lx Page %lu for %s!%s. Backup: 0x%x.\n",
-                vaddr + sym_config->syms[i].rva, container->pa,
-                pa >> 12, sym_config->name,
-                sym_config->syms[i].name,
+                vaddr + drakvuf->sym_config->syms[i].rva, container->pa,
+                pa >> 12, drakvuf->sym_config->name,
+                drakvuf->sym_config->syms[i].name,
                 container->symbol.backup);
     }
 
-    printf("\tInjected %lu traps into PID %i\n", trapped, pid);
+    PRINT_DEBUG("\tInjected %lu traps into PID %i\n", trapped, pid);
 
 }
 
-void inject_traps_modules(honeymon_clone_t *clone, addr_t list_head,
+void inject_traps_modules(drakvuf_t *drakvuf, addr_t list_head,
         vmi_pid_t pid) {
 
-    printf("Inject traps in module list of PID %u\n", pid);
+    PRINT_DEBUG("Inject traps in module list of PID %u\n", pid);
 
-    vmi_instance_t vmi = clone->vmi;
+    vmi_instance_t vmi = drakvuf->vmi;
 
     addr_t next_module = list_head;
 
@@ -498,7 +495,7 @@ void inject_traps_modules(honeymon_clone_t *clone, addr_t list_head,
 
         unicode_string_t out = { .contents = NULL };
         if (us && VMI_SUCCESS == vmi_convert_str_encoding(us, &out, "UTF-8")) {
-            printf("\t%s @ 0x%lx\n", out.contents, dllbase);
+            PRINT_DEBUG("\t%s @ 0x%lx\n", out.contents, dllbase);
         } // if
         if (us)
             vmi_free_unicode_str(us);
@@ -506,7 +503,7 @@ void inject_traps_modules(honeymon_clone_t *clone, addr_t list_head,
         if(out.contents) {
             //TODO: We only care about the kernel at this point
             if(!strcmp((char*)out.contents,"ntoskrnl.exe")) {
-                inject_traps_pe(clone, dllbase, pid, clone->origin->sym_config);
+                inject_traps_pe(drakvuf, dllbase, pid);
             }
             free(out.contents);
         }
@@ -515,15 +512,15 @@ void inject_traps_modules(honeymon_clone_t *clone, addr_t list_head,
     };
 }
 
-void inject_traps(honeymon_clone_t *clone) {
+void inject_traps(drakvuf_t *drakvuf) {
 
-    vmi_instance_t vmi = clone->vmi;
+    vmi_instance_t vmi = drakvuf->vmi;
     vmi_pause_vm(vmi);
 
     // Loop kernel modules
     addr_t kernel_list_head;
     vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &kernel_list_head);
-    inject_traps_modules(clone, kernel_list_head, 0);
+    inject_traps_modules(drakvuf, kernel_list_head, 0);
 
     addr_t current_process = 0, next_list_entry = 0;
     vmi_read_addr_ksym(vmi, "PsInitialSystemProcess", &current_process);
@@ -534,7 +531,7 @@ void inject_traps(honeymon_clone_t *clone) {
     status_t status = vmi_read_addr_va(vmi, current_list_entry, 0,
             &next_list_entry);
     if (status == VMI_FAILURE) {
-        printf(
+        PRINT_DEBUG(
                 "Failed to read next pointer at 0x%"PRIx64" before entering loop\n",
                 current_list_entry);
         return;
@@ -543,7 +540,9 @@ void inject_traps(honeymon_clone_t *clone) {
     do {
 
         vmi_pid_t pid;
+        uint32_t dtb;
         vmi_read_32_va(vmi, current_process + offsets[EPROCESS_PID], 0, (uint32_t*)&pid);
+        vmi_read_32_va(vmi, current_process + offsets[EPROCESS_PDBASE], 0, &dtb);
 
         char *procname = vmi_read_str_va(vmi, current_process + offsets[EPROCESS_PNAME], 0);
 
@@ -551,7 +550,8 @@ void inject_traps(honeymon_clone_t *clone) {
             goto exit;
         }
 
-        printf("Found process: [%5d] %s\n", pid, procname);
+        PRINT(drakvuf, FOUND_PROCESS_STRING, pid, dtb, procname);
+
         free(procname);
 
         addr_t imagebase = 0, peb = 0, ldr = 0, modlist = 0;
@@ -564,8 +564,8 @@ void inject_traps(honeymon_clone_t *clone) {
 
         /* TODO We only trap the kernel for now. */
         /*if (pid != 4) {
-            inject_traps_pe(clone, imagebase, pid, NULL);
-            inject_traps_modules(clone, modlist, pid);
+            inject_traps_pe(drakvuf, imagebase, pid, NULL);
+            inject_traps_modules(drakvuf, modlist, pid);
         }*/
 
         current_list_entry = next_list_entry;
@@ -575,7 +575,7 @@ void inject_traps(honeymon_clone_t *clone) {
 
         status = vmi_read_addr_va(vmi, current_list_entry, 0, &next_list_entry);
         if (status == VMI_FAILURE) {
-            printf("Failed to read next pointer in loop at %"PRIx64"\n",
+            PRINT_DEBUG("Failed to read next pointer in loop at %"PRIx64"\n",
                     current_list_entry);
             return;
         }
@@ -586,88 +586,82 @@ exit:
     return;
 }
 
-void *clone_vmi_thread(void *input) {
+void drakvuf_loop(drakvuf_t *drakvuf) {
 
-    printf("Started vmi clone thread\n");
+    PRINT_DEBUG("Started DRAKVUF loop\n");
 
-    honeymon_clone_t *clone = (honeymon_clone_t *) input;
-
-    clone->interrupted = 0;
+    drakvuf->interrupted = 0;
 
     vmi_event_t interrupt_event;
     memset(&interrupt_event, 0, sizeof(vmi_event_t));
     interrupt_event.type = VMI_EVENT_INTERRUPT;
     interrupt_event.interrupt_event.intr = INT3;
     interrupt_event.callback = int3_cb;
-    interrupt_event.data = clone;
+    interrupt_event.data = drakvuf;
 
-    vmi_register_event(clone->vmi, &interrupt_event);
+    vmi_register_event(drakvuf->vmi, &interrupt_event);
 
     read_count = write_count = x_count = 0;
 
-    vmi_resume_vm(clone->vmi);
-    clone->timer = g_timer_new();
+    vmi_resume_vm(drakvuf->vmi);
+    drakvuf->timer = g_timer_new();
 
-    while (!clone->interrupted) {
-        //printf("Waiting for events in DRAKVUF...\n");
-        status_t status = vmi_events_listen(clone->vmi, 100);
+    gdouble elapsed;
 
-        //gdouble elapsed = g_timer_elapsed(clone->timer, NULL);
-        //if (status != VMI_SUCCESS || elapsed >= 60) {
+    while (!drakvuf->interrupted) {
+        //PRINT_DEBUG("Waiting for events in DRAKVUF...\n");
+        status_t status = vmi_events_listen(drakvuf->vmi, 100);
 
-        if ( VMI_SUCCESS != status ) {
-            printf("Error waiting for events or timout, quitting...\n");
-            clone->interrupted = -1;
+        elapsed = g_timer_elapsed(drakvuf->timer, NULL);
+
+        if ( VMI_SUCCESS != status ||
+             (drakvuf->timeout > 0 && elapsed >= drakvuf->timeout)
+           )
+        {
+            PRINT_DEBUG("Error waiting for events or timeout, quitting...\n");
+            drakvuf->interrupted = -1;
         }
     }
 
-    vmi_pause_vm(clone->vmi);
-    print_sharing_info(clone->honeymon->xen, clone->domID);
+    vmi_pause_vm(drakvuf->vmi);
+    print_sharing_info(drakvuf->xen, drakvuf->domID);
 
-    printf("Vmi clone thread exiting\n");
-    pthread_exit(0);
-    return NULL;
+    PRINT_DEBUG("DRAKVUF loop finished\n");
 }
 
-void clone_vmi_init(honeymon_clone_t *clone) {
+void init_vmi(drakvuf_t *drakvuf) {
 
-    printf("Init VMI on domID %u -> %s\n", clone->domID, clone->clone_name);
+    PRINT_DEBUG("Init VMI on domID %u -> %s\n", drakvuf->domID, drakvuf->dom_name);
 
     GHashTable *config = g_hash_table_new(g_str_hash, g_str_equal);
     g_hash_table_insert(config, "os_type", "Windows");
-    g_hash_table_insert(config, "domid", &clone->domID);
-    g_hash_table_insert(config, "sysmap", clone->origin->rekall_profile);
+    g_hash_table_insert(config, "domid", &drakvuf->domID);
+    g_hash_table_insert(config, "sysmap", drakvuf->rekall_profile);
 
     // Initialize the libvmi library.
-    if (vmi_init_custom(&clone->vmi,
+    if (vmi_init_custom(&drakvuf->vmi,
             VMI_XEN | VMI_INIT_COMPLETE | VMI_INIT_EVENTS
                     | VMI_CONFIG_GHASHTABLE, (vmi_config_t) config)
             == VMI_FAILURE) {
-        printf("Failed to init LibVMI library.\n");
-        if (clone->vmi != NULL) {
-            vmi_destroy(clone->vmi);
+        PRINT_DEBUG("Failed to init LibVMI library.\n");
+        if (drakvuf->vmi != NULL) {
+            vmi_destroy(drakvuf->vmi);
         }
-        clone->vmi = NULL;
+        drakvuf->vmi = NULL;
         return;
     }
     g_hash_table_destroy(config);
 
-    clone->pm = vmi_get_page_mode(clone->vmi);
+    drakvuf->pm = vmi_get_page_mode(drakvuf->vmi);
 
     // Crete tables to lokup symbols from
-    clone->page_lookup = g_hash_table_new_full(g_int64_hash, g_int64_equal,
-            free, NULL);
-    clone->pa_lookup = g_hash_table_new_full(g_int64_hash, g_int64_equal, free,
+    drakvuf->pa_lookup = g_hash_table_new_full(g_int64_hash, g_int64_equal, free,
             NULL);
 
     // Pool/file watcher tables
-    clone->pool_lookup = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+    drakvuf->pool_lookup = g_hash_table_new_full(g_int64_hash, g_int64_equal,
             free, NULL);
-    clone->file_watch = g_hash_table_new_full(g_int64_hash, g_int64_equal, free,
-            NULL);
-
-    // Files accessed
-    clone->files_accessed = g_hash_table_new_full(g_str_hash, g_str_equal, free,
+    drakvuf->file_watch = g_hash_table_new_full(g_int64_hash, g_int64_equal, free,
             NULL);
 
     // Get the offsets from the Rekall profile
@@ -675,9 +669,9 @@ void clone_vmi_init(honeymon_clone_t *clone) {
     for (i = 0; i < OFFSET_MAX; i++) {
         if (VMI_FAILURE
                 == windows_system_map_symbol_to_address(
-                        clone->origin->rekall_profile, offset_names[i][0],
+                        drakvuf->rekall_profile, offset_names[i][0],
                         offset_names[i][1], &offsets[i], NULL)) {
-            printf("Failed to find offset for %s:%s\n", offset_names[i][0],
+            PRINT_DEBUG("Failed to find offset for %s:%s\n", offset_names[i][0],
                     offset_names[i][1]);
         }
     }
@@ -685,9 +679,9 @@ void clone_vmi_init(honeymon_clone_t *clone) {
     for (i = 0; i < SIZE_LIST_MAX; i++) {
         if (VMI_FAILURE
                 == windows_system_map_symbol_to_address(
-                        clone->origin->rekall_profile, size_names[i],
+                        drakvuf->rekall_profile, size_names[i],
                         (char *) &i, NULL, &struct_sizes[i])) {
-            printf("Failed to find offset for %s:%s\n", offset_names[i][0],
+            PRINT_DEBUG("Failed to find offset for %s:%s\n", offset_names[i][0],
                     offset_names[i][1]);
             continue;
         }
@@ -696,14 +690,14 @@ void clone_vmi_init(honeymon_clone_t *clone) {
 
 // -------------------------- closing
 
-void close_vmi_clone(honeymon_clone_t *clone) {
+void close_vmi(drakvuf_t *drakvuf) {
 
-    vmi_instance_t vmi = clone->vmi;
+    vmi_instance_t vmi = drakvuf->vmi;
     do {
         GHashTableIter i;
         addr_t *key = NULL;
         struct symbolwrap *s = NULL;
-        ghashtable_foreach(clone->pa_lookup, i, key, s)
+        ghashtable_foreach(drakvuf->pa_lookup, i, key, s)
         {
             vmi_event_t *guard = vmi_get_mem_event(vmi, *key,
                     VMI_MEMEVENT_PAGE);
@@ -713,7 +707,7 @@ void close_vmi_clone(honeymon_clone_t *clone) {
                 struct memevent *container = NULL;
                 ghashtable_foreach(guard->data, i2, key2, container) {
                     if (container->sID == SYMBOLWRAP) {
-                        vmi_write_8_pa(clone->vmi, container->pa,
+                        vmi_write_8_pa(drakvuf->vmi, container->pa,
                                 &container->symbol.backup);
                         free(container);
                     }
@@ -724,13 +718,13 @@ void close_vmi_clone(honeymon_clone_t *clone) {
             }
         }
     } while (0);
-    g_hash_table_destroy(clone->pa_lookup);
+    g_hash_table_destroy(drakvuf->pa_lookup);
 
     do {
         GHashTableIter i;
         addr_t *key = NULL;
         GHashTable *s = NULL;
-        ghashtable_foreach(clone->pool_lookup, i, key, s)
+        ghashtable_foreach(drakvuf->pool_lookup, i, key, s)
         {
             vmi_event_t *guard = vmi_get_mem_event(vmi, *key,
                     VMI_MEMEVENT_PAGE);
@@ -740,7 +734,7 @@ void close_vmi_clone(honeymon_clone_t *clone) {
                 struct memevent *container = NULL;
                 ghashtable_foreach(guard->data, i2, key2, container) {
                     if (container->sID == POOL_LOOKUP) {
-                        vmi_write_8_pa(clone->vmi, container->pa,
+                        vmi_write_8_pa(drakvuf->vmi, container->pa,
                                 &container->pool.backup);
                     }
                 }
@@ -759,19 +753,17 @@ void close_vmi_clone(honeymon_clone_t *clone) {
         }
     } while (0);
 
-    g_hash_table_destroy(clone->pool_lookup);
-    g_hash_table_destroy(clone->page_lookup);
-    g_hash_table_destroy(clone->file_watch);
-    g_hash_table_destroy(clone->files_accessed);
+    g_hash_table_destroy(drakvuf->pool_lookup);
+    g_hash_table_destroy(drakvuf->file_watch);
 
-    if (clone->timer) {
-        g_timer_destroy(clone->timer);
-        clone->timer = NULL;
+    if (drakvuf->timer) {
+        g_timer_destroy(drakvuf->timer);
+        drakvuf->timer = NULL;
     }
 
-    if (clone->vmi) {
-        vmi_destroy(clone->vmi);
-        clone->vmi = NULL;
+    if (drakvuf->vmi) {
+        vmi_destroy(drakvuf->vmi);
+        drakvuf->vmi = NULL;
     }
-    printf("close_vmi_clone finished\n");
+    PRINT_DEBUG("close_vmi_drakvuf finished\n");
 }

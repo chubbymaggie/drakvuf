@@ -110,7 +110,8 @@
 #include <libvmi/libvmi.h>
 #include <jansson.h>
 
-#include "structures.h"
+#include "drakvuf.h"
+#include "output.h"
 
 status_t windows_system_map_symbol_to_address(
         const char *rekall_profile,
@@ -125,12 +126,12 @@ status_t windows_system_map_symbol_to_address(
     json_error_t error;
     json_t *root = json_load_file(rekall_profile, 0, &error);
     if (!root) {
-        printf("Rekall profile error on line %d: %s\n", error.line, error.text);
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
         goto exit;
     }
 
     if (!json_is_object(root)) {
-        printf("Rekall profile: root is not an objet\n");
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
         goto err_exit;
     }
 
@@ -138,7 +139,7 @@ status_t windows_system_map_symbol_to_address(
         json_t *constants = json_object_get(root, "$CONSTANTS");
         json_t *jsymbol = json_object_get(constants, symbol);
         if (!jsymbol) {
-            printf("Rekall profile: symbol '%s' not found\n", symbol);
+            PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", symbol);
             goto err_exit;
         }
 
@@ -149,7 +150,7 @@ status_t windows_system_map_symbol_to_address(
         json_t *structs = json_object_get(root, "$STRUCTS");
         json_t *jstruct = json_object_get(structs, symbol);
         if (!jstruct) {
-            printf("Rekall profile: structure '%s' not found\n", symbol);
+            PRINT_DEBUG("Rekall profile: structure '%s' not found\n", symbol);
             goto err_exit;
         }
 
@@ -160,7 +161,7 @@ status_t windows_system_map_symbol_to_address(
             json_t *jstruct2 = json_array_get(jstruct, 1);
             json_t *jmember = json_object_get(jstruct2, subsymbol);
             if (!jmember) {
-                printf("Rekall profile: structure member '%s' not found\n", subsymbol);
+                PRINT_DEBUG("Rekall profile: structure member '%s' not found\n", subsymbol);
                 goto err_exit;
             }
             json_t *jvalue = json_array_get(jmember, 0);
@@ -184,25 +185,25 @@ struct sym_config* get_all_symbols(const char *rekall_profile)
     json_error_t error;
     json_t *root = json_load_file(rekall_profile, 0, &error);
     if (!root) {
-        printf("Rekall profile error on line %d: %s\n", error.line, error.text);
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
         goto err_exit;
     }
 
     if (!json_is_object(root)) {
-        printf("Rekall profile: root is not an objet\n");
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
         goto err_exit;
     }
 
-    json_t *constants = json_object_get(root, "$FUNCTIONS");
+    json_t *functions = json_object_get(root, "$FUNCTIONS");
 
-    ret->sym_count = json_object_size(constants);
-    printf("The Rekall profile defines %lu functions\n", ret->sym_count);
+    ret->sym_count = json_object_size(functions);
+    PRINT_DEBUG("The Rekall profile defines %lu functions\n", ret->sym_count);
 
     ret->syms = g_malloc0(sizeof(struct symbol) * ret->sym_count);
 
     const char *key;
     json_t *value;
-    void *iter = json_object_iter(constants);
+    void *iter = json_object_iter(functions);
     int i = 0;
     while (iter) {
         key = json_object_iter_key(iter);
@@ -212,7 +213,7 @@ struct sym_config* get_all_symbols(const char *rekall_profile)
         ret->syms[i].rva = json_integer_value(value);
 
         /* use key and value ... */
-        iter = json_object_iter_next(constants, iter);
+        iter = json_object_iter_next(functions, iter);
         i++;
     }
 
@@ -220,4 +221,33 @@ struct sym_config* get_all_symbols(const char *rekall_profile)
 
     err_exit: free(ret);
     return NULL;
+}
+
+addr_t get_function_rva(const char *rekall_profile, const char *function)
+{
+
+    json_error_t error;
+    json_t *root = json_load_file(rekall_profile, 0, &error);
+    if (!root) {
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
+        goto err_exit;
+    }
+
+    if (!json_is_object(root)) {
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
+        goto err_exit;
+    }
+
+    json_t *functions = json_object_get(root, "$FUNCTIONS");
+    json_t *jsymbol = json_object_get(functions, function);
+
+    if(!jsymbol) {
+        PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", function);
+        goto err_exit;
+    }
+
+    return json_integer_value(jsymbol);
+
+    err_exit:
+    return 0;
 }

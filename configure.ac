@@ -103,7 +103,7 @@
  #*************************************************************************#
 
 AC_PREREQ([2.60])
-AC_INIT([DRAKVUF], [0.1], [tamas.k.lengyel@gmail.com], [], [http://github.com/tklengyel/drakvuf])
+AC_INIT([DRAKVUF], [0.2], [tamas.k.lengyel@gmail.com], [], [http://github.com/tklengyel/drakvuf])
 AM_INIT_AUTOMAKE([1.10 no-define foreign])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
@@ -149,13 +149,6 @@ AC_ARG_ENABLE([debug],
   [debug="$enableval"],
   [debug="no"])   
 AM_CONDITIONAL([DEBUG], [test x$debug = xyes])
-
-AC_ARG_WITH([xmlrpc],
-      [AS_HELP_STRING([--with-xmlrpc],
-         [Build DRAKVUF with Honeybrid (xmlrpc) support])],
-      [with_xmlrpc=$withval],
-      [with_xmlrpc=no])
-AM_CONDITIONAL([XMLRPC], [test x"$with_xmlrpc" = xyes])
 
 HARDEN_CFLAGS=""
 HARDEN_LDFLAGS=""
@@ -251,25 +244,6 @@ AC_CHECK_HEADERS([xenctrl.h], [], [AC_ERROR([XenCtrl missing! Did you install Xe
 AC_CHECK_LIB([xenctrl], 
 	[xc_interface_open, xc_memshr_control, xc_memshr_nominate_gfn, xc_memshr_share_gfns], 
 	[], [AC_ERROR([XenCtrl is unusable! Do you have Xen 4.2+ installed?])])
-
-if test "x$with_xmlrpc" != "xno"; then
-    AC_PATH_PROG(XMLRPC_C_CONFIG, xmlrpc-c-config)
-    if test "x$XMLRPC_C_CONFIG" != "x"; then
-
-        PKG_CHECK_MODULES([CURL], [libcurl], [
-    
-            XMLRPC_CLIENT_LIBS=$($XMLRPC_C_CONFIG client --libs)
-            XMLRPC_CLIENT_CFLAGS=$($XMLRPC_C_CONFIG client --cflags)
-    
-            AC_DEFINE(HAVE_XMLRPC, 1, "Working XMLRPC C library found")
-    
-            AC_SUBST(XMLRPC_CLIENT_LIBS)
-            AC_SUBST(XMLRPC_CLIENT_CFLAGS)
-    
-        ], [AC_ERROR(No CURL installed)])
-
-    fi
-fi
 
 AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT

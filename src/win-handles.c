@@ -110,6 +110,7 @@
 #include <stdio.h>
 #include <glib.h>
 
+#include "output.h"
 #include "vmi.h"
 
 /* this should work for both 32 and 64bit */
@@ -138,7 +139,9 @@ addr_t handle_table_get_entry(uint32_t bit, vmi_instance_t vmi,
 
     count = VMI_PS_4KB / table_entry_size;
 
-    //printf("\tArray size: %u at 0x%lx. Table entry size is %u. Handle count remaining: %u\n", count, table_base, table_entry_size, *handle_count);
+    PRINT_DEBUG("\tHandle table array size: %u at 0x%lx. "
+                "Table entry size is %u. Handle count remaining: %u\n",
+                count, table_base, table_entry_size, *handle_count);
 
     uint32_t i;
     for (i = 0; i < count; i++) {
@@ -178,7 +181,8 @@ addr_t handle_table_get_entry(uint32_t bit, vmi_instance_t vmi,
         uint32_t handle_value = (i * table_entry_size * HANDLE_MULTIPLIER)
                 / table_entry_size + level_base;
 
-        //printf("\t\tHandle #: %u. Addr: 0x%lx. Value: 0x%x\n", *handle_count, table_entry_addr & ~EX_FAST_REF_MASK, handle_value);
+        PRINT_DEBUG("\t\tHandle #: %u. Addr: 0x%lx. Value: 0x%x\n",
+                    *handle_count, table_entry_addr & ~EX_FAST_REF_MASK, handle_value);
 
         if (handle_value == handle) {
             return table_entry_addr & ~EX_FAST_REF_MASK;
@@ -202,14 +206,14 @@ addr_t handle_table_get_entry(uint32_t bit, vmi_instance_t vmi,
  *
  * Also see: http://www.csee.umbc.edu/~stephens/SECURITY/491M/HiddenProcesses.ppt
  */
-addr_t get_obj_by_handle(honeymon_clone_t *clone, vmi_instance_t vmi,
+addr_t get_obj_by_handle(drakvuf_t *drakvuf, vmi_instance_t vmi,
         uint64_t vcpu_id, uint64_t handle) {
 
     addr_t ret = 0, thread = 0, current_process = 0;
     reg_t fsgs = 0;
     addr_t offset = 0;
 
-    if (PM2BIT(clone->pm) == BIT32) {
+    if (PM2BIT(drakvuf->pm) == BIT32) {
         vmi_get_vcpureg(vmi, &fsgs, FS_BASE, vcpu_id);
         offset = offsets[KPCR_PRCBDATA];
     } else {
@@ -226,7 +230,8 @@ addr_t get_obj_by_handle(honeymon_clone_t *clone, vmi_instance_t vmi,
                     + offsets[KTHREAD_PROCESS],
             0, &current_process);
 
-    //printf("FSGS: 0x%lx. Thread: 0x%lx. Process: 0x%lx\n", fsgs, thread, current_process);
+    PRINT_DEBUG("Get object by handle with FSGS: 0x%lx. Thread: 0x%lx. Process: 0x%lx\n",
+                fsgs, thread, current_process);
 
     // TODO: verify that the dtb in the _EPROCESS is the same as the cr3
 
@@ -248,8 +253,10 @@ addr_t get_obj_by_handle(honeymon_clone_t *clone, vmi_instance_t vmi,
     uint32_t table_levels = tablecode & EX_FAST_REF_MASK;
     uint32_t table_depth = 0;
 
-    //printf("Handle table @ 0x%lx. Handle count %u. Looking for handle: 0x%lx\n", table_base, handlecount, handle);
-    ret = handle_table_get_entry(PM2BIT(clone->pm), vmi, table_base,
+    PRINT_DEBUG("Handle table @ 0x%lx. Handle count %u. Looking for handle: 0x%lx\n",
+                table_base, handlecount, handle);
+
+    ret = handle_table_get_entry(PM2BIT(drakvuf->pm), vmi, table_base,
             table_levels, table_depth, &handlecount, handle);
 
     return ret;

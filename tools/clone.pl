@@ -121,8 +121,6 @@ use warnings;
 #
 # The LVM volume group
 our $lvm_vg = "t0vg";
-# Path to DRAKVUF xen_domconfig
-our $xen_domconfig = "../src/xen_domconfig";
 # Clone network bridge name
 our $clone_bridge = "xenbr1";
 # Vif script to pass to clone Xen config.
@@ -144,9 +142,13 @@ $xl =~ s/\015?\012?$//;;
 $mkfifo =~ s/\015?\012?$//;
 
 sub clone {
+    if (@ARGV != 3) {
+        die "Insufficient number of arguments!\nUsage: ./clone.pl <domain name> <vlan> <path/to/domain.cfg>\n";
+    }
+
     my $origin = $_[0];
     my $vlan = $_[1];
-
+    my $config = $_[2];
     my $clone = "$origin-$vlan-clone";
 
     my $origin_test = `$xl domid $origin`;
@@ -154,12 +156,16 @@ sub clone {
         die "0";
     }
 
-    my $clone_test = `$xl domid $clone`;
+    my $clone_test = `$xl domid $clone 2>/dev/null`;
     if(length $clone_test) {
         `$xl destroy $clone`;
     }
 
-    my $domconfig = `$xen_domconfig $origin`;
+    unless (-e $config) {
+        die "0";
+    }
+
+    my $domconfig = `cat $config`;
 
     open(my $fh, '>', "/tmp/$clone.config") or die "Could not open file!";
 
@@ -176,7 +182,7 @@ sub clone {
             my $count = 0;
             foreach $value (@values) {
                 if(index($value, "bridge")!=-1 && index($value, "vif-bridge")==-1) {
-                    print $fh "bridge = $clone_bridge.$vlan, $vif_script";
+                    print $fh "bridge=$clone_bridge.$vlan,$vif_script";
                 } else {
                     if(index($value, "script")==-1 && index($value, "backend")==-1) {
                         print $fh "$value";
@@ -224,12 +230,13 @@ sub clone {
     }
 
     `$lvcreate -s -n $clone -L20G /dev/$lvm_vg/$origin 2>&1`;
-    `$mkfifo /tmp/drakvuf_pipe 2>&1`;
-    `$xl save -c $origin /tmp/drakvuf_pipe 2>&1 | $xl restore -p -e /tmp/$clone.config /tmp/drakvuf_pipe 2>&1`;
+    `$mkfifo /tmp/drakvuf_pipe_$clone 2>&1`;
+    `$xl save -c $origin /tmp/drakvuf_pipe_$clone 2>&1 | $xl restore -p -e /tmp/$clone.config /tmp/drakvuf_pipe_$clone 2>&1`;
     my $cloneID = `$xl domid $clone`;
+    chomp($cloneID);
     print "$cloneID";
 }
 
 ############################################################
 
-clone($ARGV[0], $ARGV[1]);
+clone($ARGV[0], $ARGV[1], $ARGV[2]);

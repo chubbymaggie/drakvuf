@@ -173,13 +173,6 @@ int get_dom_info(xen_interface_t *xen, const char *input, uint32_t *domID,
     } else {
         //printf("Converting domid %u to name\n", _domID);
         _name = libxl_domid_to_name(xen->xl_ctx, _domID);
-        if (_name == NULL) {
-            printf(
-                    "Failed to get domain name from ID, is the domain running?\n");
-            return -1;
-        } else {
-            //printf("Got name from domID: %s\n", _name);
-        }
     }
 
     *name = _name;
@@ -188,10 +181,24 @@ int get_dom_info(xen_interface_t *xen, const char *input, uint32_t *domID,
     return 1;
 }
 
-uint8_t xen_memshare(xen_interface_t *xen, uint32_t domID, uint32_t cloneID,
-        uint64_t page) {
+uint64_t xen_memshare(xen_interface_t *xen, uint32_t domID, uint32_t cloneID) {
 
-    uint8_t shared = 0;
+    uint64_t shared = 0;
+
+#if __XEN_INTERFACE_VERSION__ < 0x00040600
+    uint64_t page, max_page = xc_domain_maximum_gpfn(xen->xc, domID);
+#else
+    xen_pfn_t page, max_page;
+    if (xc_domain_maximum_gpfn(xen->xc, domID, &max_page)) {
+        printf("Failed to get max gpfn from Xen!\n");
+        goto done;
+    }
+#endif
+
+    if (!max_page) {
+        printf("Failed to get max gpfn!\n");
+        goto done;
+    }
 
     if (xc_memshr_control(xen->xc, domID, 1)) {
         printf("Failed to enable memsharing on origin!\n");
@@ -202,17 +209,22 @@ uint8_t xen_memshare(xen_interface_t *xen, uint32_t domID, uint32_t cloneID,
         goto done;
     }
 
-    uint64_t shandle, chandle;
+    /*
+     * page will underflow when done
+     */
+    for (page = max_page; page <= max_page; page--) {
+        uint64_t shandle, chandle;
 
-    if (xc_memshr_nominate_gfn(xen->xc, domID, page, &shandle))
-        goto done;
-    if (xc_memshr_nominate_gfn(xen->xc, cloneID, page, &chandle))
-        goto done;
-    if (xc_memshr_share_gfns(xen->xc, domID, page, shandle, cloneID, page,
+        if (xc_memshr_nominate_gfn(xen->xc, domID, page, &shandle))
+            continue;
+        if (xc_memshr_nominate_gfn(xen->xc, cloneID, page, &chandle))
+            continue;
+        if (xc_memshr_share_gfns(xen->xc, domID, page, shandle, cloneID, page,
             chandle))
-        goto done;
+            continue;
 
-    shared++;
+        shared++;
+    }
 
     done: return shared;
 }
@@ -223,29 +235,4 @@ void print_sharing_info(xen_interface_t *xen, uint32_t domID) {
     xc_domain_getinfo(xen->xc, domID, 1, &info);
 
     printf("Shared memory pages: %lu\n", info.nr_shared_pages);
-}
-
-/*
- * DomU Configuration management stuff
- */
-xen_domconfig_raw_t* xen_domconfig_raw_by_id(xen_interface_t *xen,
-        unsigned int domID) {
-
-    xen_domconfig_raw_t *config = malloc(sizeof(xen_domconfig_raw_t));
-    config->config_data = NULL;
-
-    if (libxl_userdata_retrieve(xen->xl_ctx, domID, "xl",
-	    &(config->config_data), &(config->config_length)))
-    {
-        printf("Unable to get config file\n");
-        free(config);
-        return NULL;
-    }
-
-    return config;
-}
-
-void xen_free_domconfig_raw(xen_domconfig_raw_t* raw_config) {
-    g_free(raw_config->config_data);
-    free(raw_config);
 }
