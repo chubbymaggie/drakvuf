@@ -102,57 +102,53 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <libvmi/libvmi.h>
+#include <stdarg.h>
+#include "plugins.h"
+#include "private.h"
 
-#include "libdrakvuf/drakvuf.h"
+int drakvuf_plugin_init(drakvuf_t drakvuf,
+                        drakvuf_plugin_t plugin,
+                        const void *config)
+{
+    if ( __DRAKVUF_PLUGIN_LIST_MAX != 0 &&
+         plugin < __DRAKVUF_PLUGIN_LIST_MAX)
+    {
+        return plugins[plugin].init(drakvuf, config);
+    }
 
-static drakvuf_t drakvuf;
-
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
+    return 0;
 }
 
-int main(int argc, char** argv)
+int drakvuf_plugins_start(drakvuf_t drakvuf)
 {
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+    int i;
+    int ret = 0;
+
+    if (__DRAKVUF_PLUGIN_LIST_MAX == 0)
+        return ret;
+
+    for(i=0;i<__DRAKVUF_PLUGIN_LIST_MAX;i++) {
+        ret = plugins[i].start(drakvuf);
+        if (!ret)
+            break;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    return ret;
+}
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+int drakvuf_plugins_close(drakvuf_t drakvuf)
+{
+    int i;
+    int ret = 0;
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    if (__DRAKVUF_PLUGIN_LIST_MAX == 0)
+        return ret;
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
+    for(i=0;i<__DRAKVUF_PLUGIN_LIST_MAX;i++) {
+        ret = plugins[i].close(drakvuf);
+        if (!ret)
+            break;
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
+    return ret;
 }

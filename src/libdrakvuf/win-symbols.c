@@ -102,57 +102,166 @@
  *                                                                         *
  ***************************************************************************/
 
+#define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
+
 #include <libvmi/libvmi.h>
+#include <jansson.h>
+#include <glib.h>
 
-#include "libdrakvuf/drakvuf.h"
+#include "drakvuf.h"
+#include "private.h"
 
-static drakvuf_t drakvuf;
+status_t windows_system_map_lookup(
+        const char *rekall_profile,
+        const char *symbol,
+        const char *subsymbol,
+        addr_t *address,
+        addr_t *size)
+{
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
+    status_t ret = VMI_FAILURE;
+
+    json_error_t error;
+    json_t *root = json_load_file(rekall_profile, 0, &error);
+    if (!root) {
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
+        goto exit;
+    }
+
+    if (!json_is_object(root)) {
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
+        goto err_exit;
+    }
+
+    if (!subsymbol) {
+        json_t *constants = json_object_get(root, "$CONSTANTS");
+        json_t *jsymbol = json_object_get(constants, symbol);
+        if (!jsymbol) {
+            PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", symbol);
+            goto err_exit;
+        }
+
+        *address = json_integer_value(jsymbol);
+        ret = VMI_SUCCESS;
+
+    } else {
+        json_t *structs = json_object_get(root, "$STRUCTS");
+        json_t *jstruct = json_object_get(structs, symbol);
+        if (!jstruct) {
+            PRINT_DEBUG("Rekall profile: structure '%s' not found\n", symbol);
+            goto err_exit;
+        }
+
+        if (size) {
+            json_t *jsize = json_array_get(jstruct, 0);
+            *size = json_integer_value(jsize);
+        }
+
+        if (address) {
+            json_t *jstruct2 = json_array_get(jstruct, 1);
+            json_t *jmember = json_object_get(jstruct2, subsymbol);
+            if (!jmember) {
+                PRINT_DEBUG("Rekall profile: structure member '%s' not found\n", subsymbol);
+                goto err_exit;
+            }
+            json_t *jvalue = json_array_get(jmember, 0);
+
+            *address = json_integer_value(jvalue);
+        }
+        ret = VMI_SUCCESS;
+
+    }
+
+    err_exit: json_decref(root);
+
+    exit: return ret;
 }
 
-int main(int argc, char** argv)
+symbols_t* drakvuf_get_symbols_from_rekall(const char *rekall_profile)
 {
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+
+    symbols_t *ret = g_malloc0(sizeof(symbols_t));
+
+    json_error_t error;
+    json_t *root = json_load_file(rekall_profile, 0, &error);
+    if (!root) {
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
+        goto err_exit;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
+    if (!json_is_object(root)) {
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
+        goto err_exit;
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+    json_t *functions = json_object_get(root, "$FUNCTIONS");
 
-    return rc;
+    ret->count = json_object_size(functions);
+    PRINT_DEBUG("The Rekall profile defines %lu functions\n", ret->count);
+
+    ret->symbols = g_malloc0(sizeof(struct symbol) * ret->count);
+
+    const char *key;
+    json_t *value;
+    void *iter = json_object_iter(functions);
+    int i = 0;
+    while (iter) {
+        key = json_object_iter_key(iter);
+        value = json_object_iter_value(iter);
+
+        ret->symbols[i].name = strdup(key);
+        ret->symbols[i].rva = json_integer_value(value);
+
+        /* use key and value ... */
+        iter = json_object_iter_next(functions, iter);
+        i++;
+    }
+
+    return ret;
+
+    err_exit: free(ret);
+    return NULL;
+}
+
+addr_t drakvuf_get_function_rva(const char *rekall_profile, const char *function)
+{
+
+    json_error_t error;
+    json_t *root = json_load_file(rekall_profile, 0, &error);
+    if (!root) {
+        PRINT_DEBUG("Rekall profile error on line %d: %s\n", error.line, error.text);
+        goto err_exit;
+    }
+
+    if (!json_is_object(root)) {
+        PRINT_DEBUG("Rekall profile: root is not an objet\n");
+        goto err_exit;
+    }
+
+    json_t *functions = json_object_get(root, "$FUNCTIONS");
+    json_t *jsymbol = json_object_get(functions, function);
+
+    if(!jsymbol) {
+        PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", function);
+        goto err_exit;
+    }
+
+    return json_integer_value(jsymbol);
+
+    err_exit:
+    return 0;
+}
+
+void drakvuf_free_symbols(symbols_t *symbols) {
+    uint32_t i;
+    if (!symbols) return;
+
+    for (i=0; i < symbols->count; i++) {
+        free((char*)symbols->symbols[i].name);
+    }
+    free(symbols->symbols);
+    free(symbols);
 }

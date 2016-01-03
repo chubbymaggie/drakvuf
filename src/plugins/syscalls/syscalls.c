@@ -102,57 +102,94 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <libvmi/libvmi.h>
+#ifndef SYSCALLS_H
+#define SYSCALLS_H
 
-#include "libdrakvuf/drakvuf.h"
+#include <glib.h>
+#include "../plugins.h"
 
-static drakvuf_t drakvuf;
+static GSList *traps;
+static output_format_t format;
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+    switch(format) {
+    case OUTPUT_CSV:
+        printf("syscall,%s,%s\n", info->trap->module, info->trap->name);
+        break;
+    default:
+    case OUTPUT_DEFAULT:
+        printf("[SYSCALL] %s!%s\n", info->trap->module, info->trap->name);
+        break;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    return 0;
+}
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+static GSList *create_trap_config(symbols_t *symbols) {
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    GSList *ret = NULL;
+    unsigned long i;
+    for (i=0; i < symbols->count; i++) {
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+        const struct symbol *symbol = &symbols->symbols[i];
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
+        if (strncmp(symbol->name, "Nt", 2))
+            continue;
+        //if (strcmp(symbol->name, "NtCallbackReturn"))
+        //    continue;
+
+        drakvuf_trap_t *trap = g_malloc0(sizeof(drakvuf_trap_t));
+        trap->lookup_type = LOOKUP_PID;
+        trap->u.pid = 4;
+        trap->addr_type = ADDR_RVA;
+        trap->u2.rva = symbol->rva;
+        trap->name = g_strdup(symbol->name);
+        trap->module = "ntoskrnl.exe";
+        trap->type = BREAKPOINT;
+        trap->cb = cb;
+
+        ret = g_slist_prepend(ret, trap);
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
+    return ret;
 }
+
+int plugin_syscall_init(drakvuf_t drakvuf, const char *rekall_profile) {
+
+    symbols_t *symbols = drakvuf_get_symbols_from_rekall(rekall_profile);
+    if (!symbols)
+    {
+        fprintf(stderr, "Failed to parse Rekall profile at %s\n", rekall_profile);
+        return 0;
+    }
+
+    traps = create_trap_config(symbols);
+
+    drakvuf_free_symbols(symbols);
+    format = drakvuf_get_output_format(drakvuf);
+
+    return 1;
+}
+
+int plugin_syscall_start(drakvuf_t drakvuf) {
+    drakvuf_add_traps(drakvuf, traps);
+    return 1;
+}
+
+int plugin_syscall_close(drakvuf_t drakvuf) {
+    GSList *loop = traps;
+    while(loop) {
+        drakvuf_trap_t *trap = loop->data;
+        free((char*)trap->name);
+        free(loop->data);
+        loop = loop->next;
+    }
+
+    g_slist_free(traps);
+    traps = NULL;
+
+    return 1;
+}
+
+#endif

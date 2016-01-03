@@ -102,57 +102,55 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <libvmi/libvmi.h>
+#ifndef OBJMON_PRIVATE_H
+#define OBJMON_PRIVATE_H
 
-#include "libdrakvuf/drakvuf.h"
+#define WIN7_TYPEINDEX_LAST 44
+static const char *win7_typeindex[] = {
+         [0] = "",
+         [1] = "",
+         [2] = "Type",
+         [3] = "Directory",
+         [4] = "SymbolicLink",
+         [5] = "Token",
+         [6] = "Job",
+         [7] = "Process",
+         [8] = "Thread",
+         [9] = "UserApcReserve",
+         [10] = "IoCompletionReserve",
+         [11] = "DebugObject",
+         [12] = "Event",
+         [13] = "EventPair",
+         [14] = "Mutant",
+         [15] = "Callback",
+         [16] = "Semaphore",
+         [17] = "Timer",
+         [18] = "Profile",
+         [19] = "KeyedEvent",
+         [20] = "WindowStation",
+         [21] = "Desktop",
+         [22] = "TpWorkerFactory",
+         [23] = "Adapter",
+         [24] = "Controller",
+         [25] = "Device",
+         [26] = "Driver",
+         [27] = "IoCompletion",
+         [28] = "File",
+         [29] = "TmTm",
+         [30] = "TmTx",
+         [31] = "TmRm",
+         [32] = "TmEn",
+         [33] = "Section",
+         [34] = "Session",
+         [35] = "Key",
+         [36] = "ALPC Port",
+         [37] = "PowerRequest",
+         [38] = "WmiGuid",
+         [39] = "EtwRegistration",
+         [40] = "EtwConsumer",
+         [41] = "FilterConnectionPort",
+         [42] = "FilterCommunicationPort",
+         [43] = "PcwObject"
+};
 
-static drakvuf_t drakvuf;
-
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
-
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
-
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
-
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
-}
+#endif

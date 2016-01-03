@@ -102,57 +102,150 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
 #include <stdlib.h>
-#include <libvmi/libvmi.h>
+#include <xenctrl.h>
+#include <libxl_utils.h>
+#include <glib.h>
 
-#include "libdrakvuf/drakvuf.h"
+#include "xen_helper.h"
 
-static drakvuf_t drakvuf;
+bool xen_init_interface(xen_interface_t **xen) {
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+    *xen = g_malloc0(sizeof(xen_interface_t));
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+    /* We create an xc interface to test connection to it */
+    (*xen)->xc = xc_interface_open(0, 0, 0);
+
+    if ((*xen)->xc == NULL) {
+        fprintf(stderr, "xc_interface_open() failed!\n");
+        goto err;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    /* We don't need this at the moment, but just in case */
+    //xen->xsh=xs_open(XS_OPEN_READONLY);
+    (*xen)->xl_logger = (xentoollog_logger *) xtl_createlogger_stdiostream(
+            stderr, XTL_PROGRESS, 0);
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+    if (!(*xen)->xl_logger)
+    {
+        goto err;
+    }
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    if (libxl_ctx_alloc(&(*xen)->xl_ctx, LIBXL_VERSION, 0,
+                        (*xen)->xl_logger)) {
+        fprintf(stderr, "libxl_ctx_alloc() failed!\n");
+        goto err;
+    }
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+    return 1;
 
-        if (!rc) {
-            printf("Process startup failed\n");
+err:
+    xen_free_interface(*xen);
+    *xen = NULL;
+    return 0;
+}
+
+void xen_free_interface(xen_interface_t* xen) {
+    if (xen) {
+        if (xen->xl_ctx)
+            libxl_ctx_free(xen->xl_ctx);
+        if (xen->xl_logger)
+            xtl_logger_destroy(xen->xl_logger);
+        //if (xen->xsh) xs_close(xen->xsh);
+        if (xen->xc)
+            xc_interface_close(xen->xc);
+        free(xen);
+    }
+}
+
+int get_dom_info(xen_interface_t *xen, const char *input, domid_t *domID,
+        char **name) {
+
+    uint32_t _domID = ~0;
+    char *_name = NULL;
+
+    sscanf(input, "%u", &_domID);
+
+    if (_domID == ~0) {
+        _name = strdup(input);
+        libxl_name_to_domid(xen->xl_ctx, input, &_domID);
+        if (!_domID || _domID == ~0) {
+            printf("Domain is not running, failed to get domID from name!\n");
+            free(_name);
+            return -1;
         } else {
-            printf("Process startup success\n");
+            //printf("Got domID from name: %u\n", _domID);
+        }
+    } else {
+
+        xc_dominfo_t info = { 0 };
+        if ( 1 == xc_domain_getinfo(xen->xc, _domID, 1, &info)
+            && info.domid == _domID)
+        {
+            _name = libxl_domid_to_name(xen->xl_ctx, _domID);
+        } else {
+            _domID = ~0;
         }
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+    *name = _name;
+    *domID = (domid_t)_domID;
 
-    return rc;
+    return 1;
+}
+
+uint64_t xen_memshare(xen_interface_t *xen, domid_t domID, domid_t cloneID) {
+
+    uint64_t shared = 0;
+
+#if __XEN_INTERFACE_VERSION__ < 0x00040600
+    uint64_t page, max_page = xc_domain_maximum_gpfn(xen->xc, domID);
+#else
+    xen_pfn_t page, max_page;
+    if (xc_domain_maximum_gpfn(xen->xc, domID, &max_page)) {
+        printf("Failed to get max gpfn from Xen!\n");
+        goto done;
+    }
+#endif
+
+    if (!max_page) {
+        printf("Failed to get max gpfn!\n");
+        goto done;
+    }
+
+    if (xc_memshr_control(xen->xc, domID, 1)) {
+        printf("Failed to enable memsharing on origin!\n");
+        goto done;
+    }
+    if (xc_memshr_control(xen->xc, cloneID, 1)) {
+        printf("Failed to enable memsharing on clone!\n");
+        goto done;
+    }
+
+    /*
+     * page will underflow when done
+     */
+    for (page = max_page; page <= max_page; page--) {
+        uint64_t shandle, chandle;
+
+        if (xc_memshr_nominate_gfn(xen->xc, domID, page, &shandle))
+            continue;
+        if (xc_memshr_nominate_gfn(xen->xc, cloneID, page, &chandle))
+            continue;
+        if (xc_memshr_share_gfns(xen->xc, domID, page, shandle, cloneID, page,
+            chandle))
+            continue;
+
+        shared++;
+    }
+
+    done: return shared;
+}
+
+void print_sharing_info(xen_interface_t *xen, domid_t domID) {
+
+    xc_dominfo_t info;
+    xc_domain_getinfo(xen->xc, domID, 1, &info);
+
+    printf("Shared memory pages: %lu\n", info.nr_shared_pages);
 }

@@ -102,57 +102,33 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
+#ifndef DRAKVUF_PLUGINS_H
+#define DRAKVUF_PLUGINS_H
+
+#include <config.h>
 #include <stdlib.h>
-#include <libvmi/libvmi.h>
+#include "../libdrakvuf/drakvuf.h"
 
-#include "libdrakvuf/drakvuf.h"
+typedef enum drakvuf_plugin {
+    PLUGIN_SYSCALLS,
+    PLUGIN_POOLMON,
+    PLUGIN_FILETRACER,
+    PLUGIN_FILEDELETE,
+    PLUGIN_OBJMON,
+    PLUGIN_EXMON,
+    __DRAKVUF_PLUGIN_LIST_MAX
+} drakvuf_plugin_t;
 
-static drakvuf_t drakvuf;
+int drakvuf_plugin_init(drakvuf_t drakvuf,
+                        drakvuf_plugin_t plugin,
+                        const void *config);
+int drakvuf_plugins_start(drakvuf_t drakvuf);
+int drakvuf_plugins_close(drakvuf_t drakvuf);
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+/* Plugin-specific configuration input */
+struct filedelete_config {
+    const char *rekall_profile;
+    const char *dump_folder;
+};
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
-
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
-
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
-}
+#endif

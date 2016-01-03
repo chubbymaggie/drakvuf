@@ -102,57 +102,148 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <libvmi/libvmi.h>
+#ifndef EXMON_PRIVATE_H
+#define EXMON_PRIVATE_H
 
-#include "libdrakvuf/drakvuf.h"
+#define CSV_FORMAT32 "exmon,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x\n" 
+#define CSV_FORMAT64 "exmon,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x\n"
 
-static drakvuf_t drakvuf;
+#define DEFAULT_FORMAT32 "[EXMON] RSP: %x EXCEPTION_RECORD: %x EXCEPTION_CODE: %x EIP: %x EAX: %x EBX: %x ECX: %x EDX: %x EDI: %x ESI: %x EBP: %x ESP: %x \n"
+#define DEFAULT_FORMAT64 "[EXMON] EXCEPTION_RECORD: %x EXCEPTION_CODE: %x RIP: %x RAX: %x RBX: %x RSP: %x RBP: %x RDX: %x R8: %x R9: %x R10: %x R11:%x \n"
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
-
-int main(int argc, char** argv)
+typedef struct _KTRAP_FRAME
 {
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
+     uint32_t DbgEbp;
+     uint32_t DbgEip;
+     uint32_t DbgArgMark;
+     uint32_t DbgArgPointer;
+     uint16_t TempSegCs;
+     unsigned char Logging;
+     unsigned char Reserved;
+     uint32_t TempEsp;
+     uint32_t Dr0;
+     uint32_t Dr1;
+     uint32_t Dr2;
+     uint32_t Dr3;
+     uint32_t Dr6;
+     uint32_t Dr7;
+     uint32_t SegGs;
+     uint32_t SegEs;
+     uint32_t SegDs;
+     uint32_t Edx;
+     uint32_t Ecx;
+     uint32_t Eax;
+     uint32_t PreviousPreviousMode;
+     uint32_t ExceptionList;
+     uint32_t SegFs;
+     uint32_t Edi;
+     uint32_t Esi;
+     uint32_t Ebx;
+     uint32_t Ebp;
+     uint32_t ErrCode;
+     uint32_t Eip;
+     uint32_t SegCs;
+     uint32_t EFlags;
+     uint32_t HardwareEsp;
+     uint32_t HardwareSegSs;
+     uint32_t V86Es;
+     uint32_t V86Ds;
+     uint32_t V86Fs;
+     uint32_t V86Gs;
+} KTRAP_FRAME, *PKTRAP_FRAME;
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+// Based on http://msdn.moonsols.com/win7rtm_x64/KTRAP_FRAME.html
+typedef struct _M128A  // 2 elements, 0x10 bytes (sizeof)
+{
+     uint64_t       Low;
+     int64_t        High;
+}M128A, *PM128A;
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+typedef struct _KTRAP_FRAME64                    // 64 elements, 0x190 bytes (sizeof)
+{
+     uint64_t       P1Home;
+     uint64_t       P2Home;
+     uint64_t       P3Home;
+     uint64_t       P4Home;
+     uint64_t       P5;
+     char         PreviousMode;
+     uint8_t        PreviousIrql;
+     uint8_t        FaultIndicator;
+     uint8_t        ExceptionActive;
+     uint32_t      MxCsr;
+     uint64_t       Rax;
+     uint64_t       Rcx;
+     uint64_t       Rdx;
+     uint64_t       R8;
+     uint64_t       R9;
+     uint64_t       R10;
+     uint64_t       R11;
+     union                                      // 2 elements, 0x8 bytes (sizeof)
+     {
+         uint64_t       GsBase;
+         uint64_t       GsSwap;
+     };
+     struct _M128A Xmm0;                        // 2 elements, 0x10 bytes (sizeof)
+     struct _M128A Xmm1;                        // 2 elements, 0x10 bytes (sizeof)
+     struct _M128A Xmm2;                        // 2 elements, 0x10 bytes (sizeof)
+     struct _M128A Xmm3;                        // 2 elements, 0x10 bytes (sizeof)
+     struct _M128A Xmm4;                        // 2 elements, 0x10 bytes (sizeof)
+     struct _M128A Xmm5;                        // 2 elements, 0x10 bytes (sizeof)
+     union                                      // 3 elements, 0x8 bytes (sizeof)
+     {
+         uint64_t       FaultAddress;
+         uint64_t       ContextRecord;
+         uint64_t       TimeStampCKCL;
+     };
+     uint64_t       Dr0;
+     uint64_t       Dr1;
+     uint64_t       Dr2;
+     uint64_t       Dr3;
+     uint64_t       Dr6;
+     uint64_t       Dr7;
+     union                                      // 2 elements, 0x28 bytes (sizeof)
+     {
+         struct                                 // 5 elements, 0x28 bytes (sizeof)
+         {
+             uint64_t       DebugControl;
+             uint64_t       LastBranchToRip;
+             uint64_t       LastBranchFromRip;
+             uint64_t       LastExceptionToRip;
+             uint64_t       LastExceptionFromRip;
+         };
+         struct                                 // 2 elements, 0x28 bytes (sizeof)
+         {
+             uint64_t       LastBranchControl;
+             uint32_t      LastBranchMSR;
+             uint8_t        _PADDING0_[0x1C];
+         };
+     };
+     uint16_t       SegDs;
+     uint16_t       SegEs;
+     uint16_t       SegFs;
+     uint16_t       SegGs;
+     uint64_t       TrapFrame;
+     uint64_t       Rbx;
+     uint64_t       Rdi;
+     uint64_t       Rsi;
+     uint64_t       Rbp;
+     union                                      // 3 elements, 0x8 bytes (sizeof)
+     {
+         uint64_t       ErrorCode;
+         uint64_t       ExceptionFrame;
+         uint64_t       TimeStampKlog;
+     };
+     uint64_t       Rip;
+     uint16_t       SegCs;
+     uint8_t        Fill0;
+     uint8_t        Logging;
+     uint16_t       Fill1[2];
+     uint32_t      EFlags;
+     uint32_t      Fill2;
+     uint64_t       Rsp;
+     uint16_t       SegSs;
+     uint16_t       Fill3;
+     int32_t       CodePatchCycle;
+}KTRAP_FRAME64, *PKTRAP_FRAME64;
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
-
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
-}
+#endif

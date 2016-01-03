@@ -102,57 +102,121 @@
  *                                                                         *
  ***************************************************************************/
 
+#ifndef STRUCTURES_H
+#define STRUCTURES_H
+
+/******************************************/
+
+#include <config.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include <glib.h>
 #include <libvmi/libvmi.h>
+#include <libvmi/events.h>
 
-#include "libdrakvuf/drakvuf.h"
+#include "drakvuf.h"
+#include "../xen_helper/xen_helper.h"
 
-static drakvuf_t drakvuf;
+#ifdef DRAKVUF_DEBUG
+#define PRINT_DEBUG(args...) \
+    do { \
+        fprintf (stderr, args); \
+    } while (0)
+#else
+#define PRINT_DEBUG(args...) \
+    do {} while(0)
+#endif
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+static vmi_mem_access_t mem_conversion[] = {
+    [MEMACCESS_R] = VMI_MEMACCESS_R,
+    [MEMACCESS_W] = VMI_MEMACCESS_W,
+    [MEMACCESS_X] = VMI_MEMACCESS_X,
+    [MEMACCESS_RW] = VMI_MEMACCESS_RW,
+    [MEMACCESS_RX] = VMI_MEMACCESS_RX,
+    [MEMACCESS_RWX] = VMI_MEMACCESS_RWX
+};
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
+struct drakvuf {
+    char *dom_name;
+    domid_t domID;
+    char *rekall_profile;
+    output_format_t output;
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    xen_interface_t *xen;
+    uint16_t altp2m_idx, altp2m_idr;
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+    xen_pfn_t zero_page_gfn;
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    // VMI
+    GMutex vmi_lock;
+    vmi_instance_t vmi;
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+    vmi_event_t *step_event[16];
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
+    // Processing trap removals in trap callbacks
+    // is problematic so we save all such requests
+    // in a list to be processed after all callbacks
+    // are finished.
+    bool in_callback;
+    GHashTable *remove_traps;
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+    int interrupted;
+    page_mode_t pm;
+    unsigned int vcpus;
+    unsigned int init_memsize;
+    unsigned int memsize;
 
-    return rc;
-}
+    GHashTable *remapped_gfns; // Key: gfn
+                               // val: remapped gfn
+
+    GHashTable *breakpoint_lookup_pa;   // key: PA of trap
+                                        // val: struct breakpoint
+    GHashTable *breakpoint_lookup_trap; // key: trap pointer
+                                        // val: struct breakpoint
+
+    GHashTable *memaccess_lookup_gfn;  // key: gfn of trap
+                                       // val: struct memaccess
+    GHashTable *memaccess_lookup_trap; // key: trap pointer
+                                       // val: struct memaccess
+};
+
+struct breakpoint {
+    addr_t pa;
+    vmi_event_t *guard, *guard2;
+} __attribute__ ((packed));
+
+struct memaccess {
+    addr_t gfn;
+    addr_t pa;
+    vmi_event_t *memtrap;
+} __attribute__ ((packed));
+
+struct wrapper {
+    trap_type_t type;
+    drakvuf_t drakvuf;
+    GSList *traps; /* List of DRAKVUF traps registered for this event */
+    union {
+        struct memaccess memaccess;
+        struct breakpoint breakpoint;
+    };
+} __attribute__ ((packed));
+
+struct free_trap_wrapper {
+    unsigned int counter;
+    drakvuf_trap_t *trap;
+    void (*free_routine)(drakvuf_trap_t *trap);
+};
+
+struct memcb_pass {
+    drakvuf_t drakvuf;
+    addr_t gfn;
+};
+
+struct remapped_gfn {
+    xen_pfn_t o;
+    xen_pfn_t r;
+    bool active;
+};
+
+#endif

@@ -102,57 +102,243 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
+#include <config.h>
 #include <stdlib.h>
+#include <sys/prctl.h>
+#include <string.h>
+#include <strings.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <limits.h>
+#include <glib.h>
 #include <libvmi/libvmi.h>
+#include <libvmi/peparse.h>
 
-#include "libdrakvuf/drakvuf.h"
+#include "vmi.h"
+#include "win-exports.h"
 
-static drakvuf_t drakvuf;
+#define MAX_HEADER_SIZE 1024
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
+// search for the given module+symbol in the given module list
+status_t modlist_sym2va(vmi_instance_t vmi, addr_t list_head, uint32_t pid,
+        const char *mod_name, const char *symbol, addr_t *va) {
+
+    addr_t next_module = list_head;
+    /* walk the module list */
+    while (1) {
+
+        /* follow the next pointer */
+        addr_t tmp_next = 0;
+        vmi_read_addr_va(vmi, next_module, pid, &tmp_next);
+
+        /* if we are back at the list head, we are done */
+        if (list_head == tmp_next || !tmp_next) {
+            break;
+        }
+        unicode_string_t *us = vmi_read_unicode_str_va(vmi,
+                next_module + offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], pid);
+        unicode_string_t out = { .contents = NULL };
+
+        if (us && VMI_SUCCESS == vmi_convert_str_encoding(us, &out, "UTF-8")) {
+
+            PRINT_DEBUG("Found module in PID %u: %s\n", pid, out.contents);
+
+            if (!strcasecmp((char*) out.contents, mod_name)) {
+
+                addr_t dllbase;
+                vmi_read_addr_va(vmi,
+                        next_module + offsets[LDR_DATA_TABLE_ENTRY_DLLBASE],
+                        pid, &dllbase);
+
+                *va = vmi_translate_sym2v(vmi, dllbase, pid, (char *) symbol);
+
+                PRINT_DEBUG("\t%s @ 0x%lx\n", symbol, *va);
+
+                free(out.contents);
+                vmi_free_unicode_str(us);
+                return VMI_SUCCESS;
+            }
+
+            free(out.contents);
+        }
+
+        if (us)
+            vmi_free_unicode_str(us);
+
+        next_module = tmp_next;
+    }
+
+    return VMI_FAILURE;
 }
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+addr_t sym2va(vmi_instance_t vmi, vmi_pid_t target_pid, const char *mod_name,
+        const char *symbol) {
+    addr_t ret = 0;
+    addr_t list_head;
+    status_t status;
+
+    size_t pid_offset = vmi_get_offset(vmi, "win_pid");
+    size_t tasks_offset = vmi_get_offset(vmi, "win_tasks");
+
+    addr_t current_process, current_list_entry, next_list_entry;
+    vmi_read_addr_ksym(vmi, "PsInitialSystemProcess", &current_process);
+
+    /* walk the task list */
+    list_head = current_process + tasks_offset;
+    current_list_entry = list_head;
+
+    status = vmi_read_addr_va(vmi, current_list_entry, 0, &next_list_entry);
+    if (status == VMI_FAILURE) {
+        PRINT_DEBUG("Failed to read next pointer at 0x%lx before entering loop\n",
+                current_list_entry);
+        return ret;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    do {
+        current_list_entry = next_list_entry;
+        current_process = current_list_entry - tasks_offset;
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+        /* follow the next pointer */
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+        addr_t peb, ldr, inloadorder;
+        vmi_pid_t pid;
+        vmi_read_32_va(vmi, current_process + pid_offset, 0, (uint32_t*)&pid);
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+        if (pid == target_pid) {
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
+            vmi_read_addr_va(vmi, current_process + offsets[EPROCESS_PEB], 0,
+                    &peb);
+            vmi_read_addr_va(vmi, peb + offsets[PEB_LDR], pid, &ldr);
+            vmi_read_addr_va(vmi,
+                    ldr + offsets[PEB_LDR_DATA_INLOADORDERMODULELIST], pid,
+                    &inloadorder);
+
+            PRINT_DEBUG("Found target pid of %u. PEB @ 0x%lx. LDR @ 0x%lx. INLOADORDER @ 0x%lx.\n",
+                        target_pid, peb, ldr, inloadorder);
+
+            if (VMI_SUCCESS
+                    == modlist_sym2va(vmi, inloadorder, pid, mod_name, symbol,
+                            &ret)) {
+                return ret;
+            }
         }
+
+        status = vmi_read_addr_va(vmi, current_list_entry, 0, &next_list_entry);
+        if (status == VMI_FAILURE) {
+            PRINT_DEBUG("Failed to read next pointer in loop at %lx\n",
+                    current_list_entry);
+            return ret;
+        }
+    } while (next_list_entry != list_head);
+
+    return ret;
+}
+
+// search for the given module+symbol in the given module list
+status_t modlist_va2sym(vmi_instance_t vmi, addr_t list_head, addr_t va,
+        vmi_pid_t pid, char **out_mod, char **out_sym) {
+
+    addr_t next_module = list_head;
+    /* walk the module list */
+    while (1) {
+
+        /* follow the next pointer */
+        addr_t tmp_next = 0;
+        vmi_read_addr_va(vmi, next_module, pid, &tmp_next);
+
+        /* if we are back at the list head, we are done */
+        if (list_head == tmp_next || !tmp_next) {
+            break;
+        }
+        unicode_string_t *us = vmi_read_unicode_str_va(vmi,
+                next_module + offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], pid);
+        unicode_string_t out = { .contents = NULL };
+
+        if (us && VMI_SUCCESS == vmi_convert_str_encoding(us, &out, "UTF-8")) {
+            addr_t dllbase;
+            vmi_read_addr_va(vmi,
+                    next_module + offsets[LDR_DATA_TABLE_ENTRY_DLLBASE], pid,
+                    &dllbase);
+
+            const char *sym = vmi_translate_v2sym(vmi, dllbase, pid, va);
+            if (sym) {
+                *out_mod = g_strdup((char*)out.contents);
+                *out_sym = (char*) sym;
+                free(out.contents);
+                vmi_free_unicode_str(us);
+                return VMI_SUCCESS;
+            } else {
+                free(out.contents);
+            }
+        }
+
+        if (us)
+            vmi_free_unicode_str(us);
+
+        next_module = tmp_next;
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+    return VMI_FAILURE;
+}
 
-    return rc;
+status_t va2sym(vmi_instance_t vmi, addr_t va, vmi_pid_t target_pid,
+        char **out_mod, char **out_sym) {
+
+    addr_t list_head;
+
+    size_t pid_offset = vmi_get_offset(vmi, "win_pid");
+    size_t tasks_offset = vmi_get_offset(vmi, "win_tasks");
+
+    addr_t current_process, current_list_entry, next_list_entry;
+    vmi_read_addr_ksym(vmi, "PsInitialSystemProcess", &current_process);
+
+    /* walk the task list */
+    list_head = current_process + tasks_offset;
+    current_list_entry = list_head;
+
+    if (VMI_FAILURE
+            == vmi_read_addr_va(vmi, current_list_entry, 0, &next_list_entry)) {
+        PRINT_DEBUG("Failed to read next pointer at 0x%lx before entering loop\n",
+                current_list_entry);
+        return VMI_FAILURE;
+    }
+
+    do {
+        current_list_entry = next_list_entry;
+        current_process = current_list_entry - tasks_offset;
+
+        /* follow the next pointer */
+
+        addr_t peb, ldr, inloadorder;
+        vmi_pid_t pid;
+        vmi_read_32_va(vmi, current_process + pid_offset, 0, (uint32_t*)&pid);
+
+        if (pid == target_pid) {
+
+            vmi_read_addr_va(vmi, current_process + offsets[EPROCESS_PEB], 0,
+                    &peb);
+            vmi_read_addr_va(vmi, peb + offsets[PEB_LDR], pid, &ldr);
+            vmi_read_addr_va(vmi,
+                    ldr + offsets[PEB_LDR_DATA_INLOADORDERMODULELIST], pid,
+                    &inloadorder);
+
+            if (VMI_SUCCESS
+                    == modlist_va2sym(vmi, inloadorder, va, pid, out_mod,
+                            out_sym)) {
+                return VMI_SUCCESS;
+            }
+        }
+
+        if (VMI_FAILURE
+                == vmi_read_addr_va(vmi, current_list_entry, 0,
+                        &next_list_entry)) {
+            PRINT_DEBUG("Failed to read next pointer in loop at %lx\n",
+                    current_list_entry);
+            return VMI_FAILURE;
+        }
+    } while (next_list_entry != list_head);
+
+    return VMI_FAILURE;
 }

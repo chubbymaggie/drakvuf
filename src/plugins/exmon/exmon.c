@@ -102,57 +102,120 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <glib.h>
 #include <libvmi/libvmi.h>
+#include "private.h"
+#include "../plugins.h"
 
-#include "libdrakvuf/drakvuf.h"
 
-static drakvuf_t drakvuf;
+// In case we'll need more APIs hooked, we keep a list handy
+static GSList *traps;
+static output_format_t format;
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    char *str_format;
+    page_mode_t pm = vmi_get_page_mode(vmi);
+    uint8_t index = ~0;
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    access_context_t ctx = {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+    };
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+    if(pm != VMI_PM_IA32E){
+        KTRAP_FRAME trap_frame;
+        reg_t exception_record, ptrap_frame, exception_code;
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
+        ctx.addr = info->regs->rsp+4;
+        vmi_read_32(vmi, &ctx, (uint32_t*)&exception_record);
+        ctx.addr = info->regs->rsp+12;
+        vmi_read_32(vmi, &ctx, (uint32_t*)&ptrap_frame);
+        ctx.addr = ptrap_frame;
+        vmi_read(vmi,&ctx, &trap_frame,sizeof(KTRAP_FRAME));
+        ctx.addr = exception_record;
+        vmi_read_32(vmi, &ctx, (uint32_t*)&exception_code);
+        switch(format) {
+        case OUTPUT_CSV:
+            str_format=CSV_FORMAT32;
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            str_format=DEFAULT_FORMAT32;
+            break;
         }
+        printf(str_format, \
+        (uint32_t)info->regs->rsp, (uint32_t)exception_record, (uint32_t)exception_code,\
+        (uint32_t)(trap_frame.Eip), (uint32_t)(trap_frame.Eax), (uint32_t)(trap_frame.Ebx),\
+        (uint32_t)(trap_frame.Ecx), (uint32_t)(trap_frame.Edx), (uint32_t)(trap_frame.Edi),\
+        (uint32_t)(trap_frame.Esi), (uint32_t)(trap_frame.Ebp), (uint32_t)(trap_frame.HardwareEsp));
+    }else{
+        KTRAP_FRAME64 trap_frame64;
+        reg_t exception_code;
+
+        ctx.addr = info->regs->r8;
+        vmi_read(vmi,&ctx, &trap_frame64,sizeof(KTRAP_FRAME64));
+        ctx.addr = info->regs->rcx;
+        vmi_read_32(vmi, &ctx, (uint32_t*)&exception_code);
+        switch(format) {
+        case OUTPUT_CSV:
+            str_format=CSV_FORMAT64;
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            str_format=DEFAULT_FORMAT64;
+            break;
+        }
+        printf(str_format, \
+        info->regs->rcx, exception_code, trap_frame64.Rip, trap_frame64.Rax, trap_frame64.Rbx,\
+        trap_frame64.Rsp,  trap_frame64.Rbp, trap_frame64.Rdx,trap_frame64.R8, trap_frame64.R9,\
+        trap_frame64.R10, trap_frame64.R11);
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
+    drakvuf_release_vmi(drakvuf);
+    return 0;
 }
+
+int plugin_exmon_init(drakvuf_t drakvuf, const char *rekall_profile) {
+
+    drakvuf_trap_t *trap = g_malloc0(sizeof(drakvuf_trap_t));
+    trap->lookup_type = LOOKUP_PID;
+    trap->u.pid = 4;
+    trap->addr_type = ADDR_RVA;
+    trap->u2.rva = drakvuf_get_function_rva(rekall_profile, "KiDispatchException");
+    trap->name = "KiDispatchException";
+    trap->module = "ntoskrnl.exe";
+    trap->type = BREAKPOINT;
+    trap->cb = cb;
+
+    if (!trap->u2.rva) {
+        return 0;
+    }
+
+    traps = g_slist_prepend(traps, trap);
+    format = drakvuf_get_output_format(drakvuf);
+
+    return 1;
+}
+
+
+
+int plugin_exmon_start(drakvuf_t drakvuf) {
+    drakvuf_add_traps(drakvuf, traps);
+    return 1;
+}
+
+int plugin_exmon_close(drakvuf_t drakvuf) {
+    GSList *loop = traps;
+    while(loop) {
+        free(loop->data);
+        loop = loop->next;
+    }
+
+    g_slist_free(traps);
+    traps = NULL;
+
+    return 1;
+}
+

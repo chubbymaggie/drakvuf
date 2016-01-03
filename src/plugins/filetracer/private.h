@@ -102,57 +102,34 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <libvmi/libvmi.h>
+#ifndef FILETRACER_PRIVATE_H
+#define FILETRACER_PRIVATE_H
 
-#include "libdrakvuf/drakvuf.h"
+struct pool_header_x86 {
+    union {
+        struct {
+            uint16_t previous_size :9;
+            uint16_t pool_index :7;
+            uint16_t block_size :9; // bits 0-9
+            uint16_t pool_type :7; // bits 10-16
+        };
+        uint16_t flags;
+    };
+    uint32_t pool_tag;
+}__attribute__ ((packed));
 
-static drakvuf_t drakvuf;
+struct pool_header_x64 {
+    union {
+        struct {
+            uint32_t previous_size :8;
+            uint32_t pool_index :8;
+            uint32_t block_size :8;
+            uint32_t pool_type :8;
+        };
+        uint32_t flags;
+    };
+    uint32_t pool_tag;
+    uint64_t process_billed; // _EPROCESS *
+}__attribute__ ((packed));
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
-
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
-
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
-
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
-
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
-
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
-
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
-
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
-}
+#endif

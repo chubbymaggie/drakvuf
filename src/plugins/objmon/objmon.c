@@ -102,57 +102,107 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <config.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <dirent.h>
+#include <glib.h>
+#include <err.h>
+
 #include <libvmi/libvmi.h>
+#include "../plugins.h"
+#include "private.h"
 
-#include "libdrakvuf/drakvuf.h"
+static drakvuf_trap_t trap;
+static output_format_t format;
+static addr_t typeindex_offset;
 
-static drakvuf_t drakvuf;
+/*
+ NTKERNELAPI
+ NTSTATUS
+ ObCreateObject (
+ IN KPROCESSOR_MODE ObjectAttributesAccessMode OPTIONAL,
+ IN POBJECT_TYPE ObjectType,
+ IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+ IN KPROCESSOR_MODE AccessMode,
+ IN PVOID Reserved,
+ IN ULONG ObjectSizeToAllocate,
+ IN ULONG PagedPoolCharge OPTIONAL,
+ IN ULONG NonPagedPoolCharge OPTIONAL,
+ OUT PVOID *Object
+ );
+ */
+static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    page_mode_t pm = vmi_get_page_mode(vmi);
+    uint8_t index = ~0;
+
+    access_context_t ctx = {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+        .addr = info->regs->rdx + typeindex_offset
+    };
+
+    vmi_read_8(vmi, &ctx, &index);
+
+    if(index < WIN7_TYPEINDEX_LAST)
+    {
+        switch(format) {
+        case OUTPUT_CSV:
+        {
+            printf("objmon,%s", win7_typeindex[index]);
+            break;
+        }
+        default:
+        case OUTPUT_DEFAULT:
+            printf("[OBJMON] %s", win7_typeindex[index]);
+            break;
+        };
+
+        printf("\n");
+    }
+
+    drakvuf_release_vmi(drakvuf);
+    return 0;
 }
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
+/* ----------------------------------------------------- */
+
+int plugin_objmon_init(drakvuf_t drakvuf, const char *rekall_profile) {
+    trap.lookup_type = LOOKUP_PID;
+    trap.u.pid = 4;
+    trap.addr_type = ADDR_RVA;
+    trap.u2.rva = drakvuf_get_function_rva(rekall_profile, "ObCreateObject");
+    trap.name = "ObCreateObject";
+    trap.module = "ntoskrnl.exe";
+    trap.type = BREAKPOINT;
+    trap.cb = cb;
+
+    if (!trap.u2.rva) {
+        return 0;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+    format = drakvuf_get_output_format(drakvuf);
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+    windows_system_map_lookup(rekall_profile, "_OBJECT_HEADER", "TypeIndex", &typeindex_offset, NULL);
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    return 1;
+}
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+int plugin_objmon_start(drakvuf_t drakvuf) {
+    drakvuf_add_trap(drakvuf, &trap);
+    return 1;
+}
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
-
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
-
-    return rc;
+int plugin_objmon_close(drakvuf_t drakvuf) {
+    return 1;
 }

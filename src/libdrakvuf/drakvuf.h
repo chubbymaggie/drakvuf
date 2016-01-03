@@ -102,57 +102,147 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
+#ifndef DRAKVUF_H
+#define DRAKVUF_H
+
+#include <glib.h>
 #include <libvmi/libvmi.h>
+#include <libvmi/events.h>
 
-#include "libdrakvuf/drakvuf.h"
+/*---------------------------------------------------------
+ * Reading in Rekall profile informations
+ */
 
-static drakvuf_t drakvuf;
+typedef struct symbol {
+    const char *name;
+    addr_t rva;
+    uint8_t type;
+    int inputs;
+} __attribute__ ((packed)) symbol_t;
 
-static void close_handler(int sig) {
-    drakvuf_interrupt(drakvuf, sig);
-}
+typedef struct symbols {
+    const char *name;
+    symbol_t *symbols;
+    uint64_t count;
+} symbols_t;
 
-int main(int argc, char** argv)
-{
-    if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
-        return 1;
-    }
+addr_t drakvuf_get_function_rva(const char *rekall_profile, const char *function);
+symbols_t* drakvuf_get_symbols_from_rekall(const char *profile);
+status_t windows_system_map_lookup(
+        const char *rekall_profile,
+        const char *symbol,
+        const char *subsymbol,
+        addr_t *address,
+        addr_t *size);
+void drakvuf_free_symbols(symbols_t *symbols);
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    char *app = argv[4];
+/*---------------------------------------------------------
+ * DRAKVUF functions
+ */
 
-    /* for a clean exit */
-    struct sigaction act;
-    act.sa_handler = close_handler;
-    act.sa_flags = 0;
-    sigemptyset(&act.sa_mask);
-    sigaction(SIGHUP, &act, NULL);
-    sigaction(SIGTERM, &act, NULL);
-    sigaction(SIGINT, &act, NULL);
-    sigaction(SIGALRM, &act, NULL);
+typedef enum {
+    OUTPUT_DEFAULT,
+    OUTPUT_CSV,
+    __OUTPUT_MAX
+} output_format_t;
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+typedef enum lookup_type {
+    LOOKUP_NONE,
+    LOOKUP_DTB,
+    LOOKUP_PID,
+    LOOKUP_NAME,
+} lookup_type_t;
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+typedef enum addr_type {
+    ADDR_RVA,
+    ADDR_VA,
+    ADDR_PA
+} addr_type_t;
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
-    }
+typedef enum trap_type {
+    BREAKPOINT      = 1 << 0,
+    MEMACCESS_R     = 1 << 1,
+    MEMACCESS_W     = 1 << 2,
+    MEMACCESS_X     = 1 << 3,
+    MEMACCESS_RW    = (MEMACCESS_R | MEMACCESS_W),
+    MEMACCESS_RX    = (MEMACCESS_R | MEMACCESS_X),
+    MEMACCESS_RWX   = (MEMACCESS_R | MEMACCESS_W | MEMACCESS_W)
+} trap_type_t;
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+typedef enum memaccess_type {
+    PRE,
+    POST
+} memaccess_type_t;
 
-    return rc;
-}
+typedef struct drakvuf* drakvuf_t;
+struct drakvuf_trap;
+typedef struct drakvuf_trap drakvuf_trap_t;
+
+typedef struct drakvuf_trap_info {
+    unsigned int vcpu;
+    uint16_t altp2m_idx;
+    addr_t trap_pa;
+    x86_registers_t *regs;
+    drakvuf_trap_t *trap;
+} drakvuf_trap_info_t;
+
+struct drakvuf_trap {
+    event_response_t (*cb)(drakvuf_t, drakvuf_trap_info_t*);
+
+    lookup_type_t lookup_type;
+    union {
+        vmi_pid_t pid;
+        const char *proc;
+    } u;
+
+    /* If specified and RVA is used
+       RVA will be calculated from the base
+       of this module */
+    const char *module;
+    const char *name;
+
+    addr_type_t addr_type;
+    union {
+        addr_t rva;
+        addr_t addr;
+    } u2;
+
+    trap_type_t type;
+    memaccess_type_t memaccess_type; // iff type == MEMACCESS_*
+
+    void *data;
+};
+
+bool drakvuf_init (drakvuf_t *drakvuf,
+                   const char *domain,
+                   const char *rekall_profile);
+void drakvuf_close (drakvuf_t drakvuf);
+void drakvuf_add_trap(drakvuf_t drakvuf,
+                      drakvuf_trap_t *trap);
+void drakvuf_add_traps(drakvuf_t drakvuf,
+                       GSList *traps);
+void drakvuf_remove_trap (drakvuf_t drakvuf,
+                          drakvuf_trap_t *trap,
+                          void(*free_routine)(drakvuf_trap_t *trap));
+void drakvuf_remove_traps(drakvuf_t drakvuf,
+                          GSList *traps);
+void drakvuf_loop (drakvuf_t drakvuf);
+void drakvuf_interrupt (drakvuf_t drakvuf,
+                        int sig);
+int drakvuf_inject_cmd (drakvuf_t drakvuf,
+                        vmi_pid_t pid,
+                        const char *cmd);
+void drakvuf_pause (drakvuf_t drakvuf);
+void drakvuf_resume (drakvuf_t drakvuf);
+
+vmi_instance_t drakvuf_lock_and_get_vmi(drakvuf_t drakvuf);
+void drakvuf_release_vmi(drakvuf_t drakvuf);
+
+output_format_t drakvuf_get_output_format(drakvuf_t drakvuf);
+void drakvuf_set_output_format(drakvuf_t drakvuf,
+                               output_format_t output);
+addr_t drakvuf_get_obj_by_handle(drakvuf_t drakvuf,
+                                 addr_t process,
+                                 uint64_t handle);
+
+#endif
