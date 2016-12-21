@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -102,48 +102,22 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifndef PLUGIN_PRIVATE_H
-#define PLUGIN_PRIVATE_H
+#ifndef DRAKVUF_PLUGINS_PRIVATE_H
+#define DRAKVUF_PLUGINS_PRIVATE_H
 
-#include <config.h>
-#include "plugins.h"
-#include "syscalls/syscalls.h"
-#include "poolmon/poolmon.h"
-#include "filetracer/filetracer.h"
-#include "filedelete/filedelete.h"
-#include "objmon/objmon.h"
-#include "exmon/exmon.h"
+#ifdef DRAKVUF_DEBUG
 
-typedef int (*plugin_init_t) (drakvuf_t drakvuf, const void *config);
-typedef int (*plugin_start_t) (drakvuf_t drakvuf);
-typedef int (*plugin_close_t) (drakvuf_t drakvuf);
+// This is defined in libdrakvuf
+extern bool verbose;
 
-typedef struct plugin {
-    plugin_init_t init;
-    plugin_start_t start;
-    plugin_close_t close;
-} plugin_t;
+#define PRINT_DEBUG(...) \
+    do { \
+        if(verbose) fprintf (stderr, __VA_ARGS__); \
+    } while (0)
 
-static plugin_t plugins[] = {
-
-    [PLUGIN_SYSCALLS] = { .init = plugin_syscall_init,
-                          .start = plugin_syscall_start,
-                          .close = plugin_syscall_close},
-    [PLUGIN_POOLMON] = { .init = plugin_poolmon_init,
-                         .start = plugin_poolmon_start,
-                         .close = plugin_poolmon_close },
-    [PLUGIN_FILETRACER] = { .init = plugin_filetracer_init,
-                            .start = plugin_filetracer_start,
-                            .close = plugin_filetracer_close },
-    [PLUGIN_FILEDELETE] = { .init = plugin_filedelete_init,
-                            .start = plugin_filedelete_start,
-                            .close = plugin_filedelete_close },
-    [PLUGIN_OBJMON] = { .init = plugin_objmon_init,
-                        .start = plugin_objmon_start,
-                        .close = plugin_objmon_close },
-    [PLUGIN_EXMON] = { .init = plugin_exmon_init,
-                        .start = plugin_exmon_start,
-                        .close = plugin_exmon_close }
-};
+#else
+#define PRINT_DEBUG(...) \
+    do {} while(0)
+#endif
 
 #endif

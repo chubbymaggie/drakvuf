@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,24 @@
 #ifndef OBJMON_H
 #define OBJMON_H
 
-#ifdef ENABLE_PLUGIN_OBJMON
+#include "plugins/plugins.h"
 
-int plugin_objmon_init(drakvuf_t drakvuf, const void *config);
-int plugin_objmon_start(drakvuf_t drakvuf);
-int plugin_objmon_close(drakvuf_t drakvuf);
+class objmon: public plugin {
+    public:
+        output_format_t format;
+        drakvuf_trap_t trap = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .name = "ObCreateObject",
+            .type = BREAKPOINT,
+            .data = (void*)this,
+        };
+        addr_t typeindex_offset;
 
-#else
-
-static int plugin_objmon_init(drakvuf_t drakvuf, const void *config) {
-    return 1;
-}
-static int plugin_objmon_start(drakvuf_t drakvuf) {
-    return 1;
-}
-static int plugin_objmon_close(drakvuf_t drakvuf) {
-    return 1;
-}
-
-#endif
+        objmon(drakvuf_t drakvuf, const void *config, output_format_t output);
+        ~objmon();
+};
 
 #endif

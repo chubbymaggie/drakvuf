@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,26 @@
 #ifndef EXMON_H
 #define EXMON_H
 
-#ifdef ENABLE_PLUGIN_EXMON
+#include "plugins/plugins.h"
 
-int plugin_exmon_init(drakvuf_t drakvuf, const void *config);
-int plugin_exmon_start(drakvuf_t drakvuf);
-int plugin_exmon_close(drakvuf_t drakvuf);
+class exmon: public plugin {
+    public:
+        drakvuf_trap_t trap = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .name = "KiDispatchException",
+            .type = BREAKPOINT,
+            .data = (void*)this
+        };
+        output_format_t format;
+        page_mode_t pm;
+        size_t *offsets;
+        size_t ktrap_frame_size;
 
-#else
-
-static int plugin_exmon_init(drakvuf_t drakvuf, const void *config) {
-    return 1;
-}
-static int plugin_exmon_start(drakvuf_t drakvuf) {
-    return 1;
-}
-static int plugin_exmon_close(drakvuf_t drakvuf) {
-    return 1;
-}
-
-#endif
+        exmon(drakvuf_t drakvuf, const void *config, output_format_t output);
+        ~exmon();
+};
 
 #endif

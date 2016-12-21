@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,16 @@
 #ifndef POOLMON_H
 #define POOLMON_H
 
-#ifdef ENABLE_PLUGIN_POOLMON
+#include "plugins/plugins.h"
 
-int plugin_poolmon_init(drakvuf_t drakvuf, const void *config);
-int plugin_poolmon_start(drakvuf_t drakvuf);
-int plugin_poolmon_close(drakvuf_t drakvuf);
+class poolmon: public plugin {
+    public:
+        output_format_t format;
+        GTree *pooltag_tree;
+        drakvuf_trap_t trap;
 
-#else
-
-static int plugin_poolmon_init(drakvuf_t drakvuf, const void *config) {
-    return 1;
-}
-static int plugin_poolmon_start(drakvuf_t drakvuf) {
-    return 1;
-}
-static int plugin_poolmon_close(drakvuf_t drakvuf) {
-    return 1;
-}
-
-#endif
+        poolmon(drakvuf_t drakvuf, const void *config, output_format_t output);
+        ~poolmon();
+};
 
 #endif

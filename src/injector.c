@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -104,9 +104,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <libvmi/libvmi.h>
 
-#include "libdrakvuf/drakvuf.h"
+#include <libdrakvuf/libdrakvuf.h>
+#include <libinjector/libinjector.h>
 
 static drakvuf_t drakvuf;
 
@@ -117,7 +119,8 @@ static void close_handler(int sig) {
 int main(int argc, char** argv)
 {
     if (argc < 5) {
-        printf("Usage: ./%s <rekall profile> <domain> <pid> <app>\n", argv[0]);
+        printf("Usage: %s <rekall profile> <domain> <pid> <app> [tid]\n", argv[0]);
+        printf("\t<required> [optional]\n");
         return 1;
     }
 
@@ -125,7 +128,16 @@ int main(int argc, char** argv)
     const char *rekall_profile = argv[1];
     const char *domain = argv[2];
     vmi_pid_t pid = atoi(argv[3]);
+    uint32_t tid = 0;
     char *app = argv[4];
+    bool verbose = 0;
+
+    if ( argc == 6 )
+        tid = atoi(argv[5]);
+
+#ifdef DRAKVUF_DEBUG
+    verbose = 1;
+#endif
 
     /* for a clean exit */
     struct sigaction act;
@@ -137,12 +149,14 @@ int main(int argc, char** argv)
     sigaction(SIGINT, &act, NULL);
     sigaction(SIGALRM, &act, NULL);
 
-    drakvuf_init(&drakvuf, domain, rekall_profile);
-    drakvuf_pause(drakvuf);
+    if (!drakvuf_init(&drakvuf, domain, rekall_profile, verbose)) {
+        fprintf(stderr, "Failed to initialize on domain %s\n", domain);
+        return rc;
+    }
 
     if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u\n", app, pid);
-        rc = drakvuf_inject_cmd(drakvuf, pid, app);
+        printf("Injector starting %s through PID %u TID: %u\n", app, pid, tid);
+        rc = injector_start_app(drakvuf, pid, tid, app);
 
         if (!rc) {
             printf("Process startup failed\n");
@@ -151,8 +165,7 @@ int main(int argc, char** argv)
         }
     }
 
-    drakvuf_resume(drakvuf);
-    drakvuf_close(drakvuf);
+    drakvuf_close(drakvuf, 0);
 
     return rc;
 }

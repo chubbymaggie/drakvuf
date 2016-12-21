@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -110,40 +110,40 @@
 #include <config.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <inttypes.h>
 #include <glib.h>
 #include <libvmi/libvmi.h>
 #include <libvmi/events.h>
 
-#include "drakvuf.h"
+#include "libdrakvuf.h"
+#include "vmi.h"
+#include "os.h"
 #include "../xen_helper/xen_helper.h"
 
 #ifdef DRAKVUF_DEBUG
-#define PRINT_DEBUG(args...) \
+
+extern bool verbose;
+
+#define PRINT_DEBUG(...) \
     do { \
-        fprintf (stderr, args); \
+        if(verbose) fprintf (stderr, __VA_ARGS__); \
     } while (0)
+
 #else
-#define PRINT_DEBUG(args...) \
+#define PRINT_DEBUG(...) \
     do {} while(0)
 #endif
 
-static vmi_mem_access_t mem_conversion[] = {
-    [MEMACCESS_R] = VMI_MEMACCESS_R,
-    [MEMACCESS_W] = VMI_MEMACCESS_W,
-    [MEMACCESS_X] = VMI_MEMACCESS_X,
-    [MEMACCESS_RW] = VMI_MEMACCESS_RW,
-    [MEMACCESS_RX] = VMI_MEMACCESS_RX,
-    [MEMACCESS_RWX] = VMI_MEMACCESS_RWX
-};
+#define UNUSED(x) (void)(x)
 
 struct drakvuf {
     char *dom_name;
     domid_t domID;
     char *rekall_profile;
-    output_format_t output;
+    os_t os;
 
     xen_interface_t *xen;
+    os_interface_t osi;
     uint16_t altp2m_idx, altp2m_idr;
 
     xen_pfn_t zero_page_gfn;
@@ -152,7 +152,14 @@ struct drakvuf {
     GMutex vmi_lock;
     vmi_instance_t vmi;
 
+    vmi_event_t cr3_event;
+    vmi_event_t interrupt_event;
+    vmi_event_t mem_event;
+    vmi_event_t debug_event;
+    vmi_event_t cpuid_event;
     vmi_event_t *step_event[16];
+
+    size_t *offsets;
 
     // Processing trap removals in trap callbacks
     // is problematic so we save all such requests
@@ -166,12 +173,16 @@ struct drakvuf {
     unsigned int vcpus;
     unsigned int init_memsize;
     unsigned int memsize;
+    addr_t kernbase;
+    addr_t kpcr[16]; // vCPU specific kpcr recorded on mov-to-cr3
 
     GHashTable *remapped_gfns; // Key: gfn
                                // val: remapped gfn
 
     GHashTable *breakpoint_lookup_pa;   // key: PA of trap
                                         // val: struct breakpoint
+    GHashTable *breakpoint_lookup_gfn;  // key: gfn (size uint64_t)
+                                        // val: GSList of addr_t* for trap locations
     GHashTable *breakpoint_lookup_trap; // key: trap pointer
                                         // val: struct breakpoint
 
@@ -179,17 +190,20 @@ struct drakvuf {
                                        // val: struct memaccess
     GHashTable *memaccess_lookup_trap; // key: trap pointer
                                        // val: struct memaccess
+
+    GSList *cr0, *cr3, *cr4, *debug, *cpuid;
 };
 
 struct breakpoint {
     addr_t pa;
-    vmi_event_t *guard, *guard2;
+    drakvuf_trap_t guard, guard2;
+    bool doubletrap;
 } __attribute__ ((packed));
 
 struct memaccess {
     addr_t gfn;
-    addr_t pa;
-    vmi_event_t *memtrap;
+    bool guard2;
+    vmi_mem_access_t access;
 } __attribute__ ((packed));
 
 struct wrapper {
@@ -205,12 +219,7 @@ struct wrapper {
 struct free_trap_wrapper {
     unsigned int counter;
     drakvuf_trap_t *trap;
-    void (*free_routine)(drakvuf_trap_t *trap);
-};
-
-struct memcb_pass {
-    drakvuf_t drakvuf;
-    addr_t gfn;
+    drakvuf_trap_free_t free_routine;
 };
 
 struct remapped_gfn {
@@ -219,4 +228,22 @@ struct remapped_gfn {
     bool active;
 };
 
+struct memcb_pass {
+    drakvuf_t drakvuf;
+    uint64_t gfn;
+    addr_t pa;
+    char *procname;
+    int64_t sessionid;
+    struct remapped_gfn *remapped_gfn;
+    vmi_mem_access_t access;
+    GSList *traps;
+};
+
+void drakvuf_force_resume (drakvuf_t drakvuf);
+
+char *drakvuf_get_current_process_name(drakvuf_t drakvuf,
+                                       uint64_t vcpu_id);
+
+int64_t drakvuf_get_current_process_sessionid(drakvuf_t drakvuf,
+                                              uint64_t vcpu_id);
 #endif

@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,28 @@
 #ifndef FILEDELETE_H
 #define FILEDELETE_H
 
-#ifdef ENABLE_PLUGIN_FILEDELETE
+#include "plugins/plugins.h"
 
-int plugin_filedelete_init(drakvuf_t drakvuf, const void *config);
-int plugin_filedelete_start(drakvuf_t drakvuf);
-int plugin_filedelete_close(drakvuf_t drakvuf);
+class filedelete: public plugin {
+    public:
+        drakvuf_trap_t traps[4] = {
+            [0 ... 3] = {
+                .breakpoint.lookup_type = LOOKUP_PID,
+                .breakpoint.pid = 4,
+                .breakpoint.addr_type = ADDR_RVA,
+                .breakpoint.module = "ntoskrnl.exe",
+                .type = BREAKPOINT,
+                .data = (void*)this
+            }
+        };
+        size_t* offsets;
 
-#else
-
-static int plugin_filedelete_init(drakvuf_t drakvuf, const void *config) {
-    return 1;
-}
-static int plugin_filedelete_start(drakvuf_t drakvuf) {
-    return 1;
-}
-static int plugin_filedelete_close(drakvuf_t drakvuf) {
-    return 1;
-}
-
-#endif
+        const char *dump_folder;
+        page_mode_t pm;
+        uint32_t domid;
+        output_format_t format;
+        filedelete(drakvuf_t drakvuf, const void *config, output_format_t output);
+        ~filedelete();
+};
 
 #endif

@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel.  *
+ * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,20 @@
 #ifndef SYSCALLS_H
 #define SYSCALLS_H
 
-#ifdef ENABLE_PLUGIN_SYSCALLS
+#include <glib.h>
+#include "plugins/plugins.h"
+#include "plugins/private.h"
 
-int plugin_syscall_init(drakvuf_t drakvuf, const void *config);
-int plugin_syscall_start(drakvuf_t drakvuf);
-int plugin_syscall_close(drakvuf_t drakvuf);
+class syscalls: public plugin {
 
-#else
+    private:
+        GSList *traps;
 
-static int plugin_syscall_init(drakvuf_t drakvuf, const void *config) {
-    return 1;
-}
-static int plugin_syscall_start(drakvuf_t drakvuf) {
-    return 1;
-}
-static int plugin_syscall_close(drakvuf_t drakvuf) {
-    return 1;
-}
-
-#endif
+    public:
+        output_format_t format;
+        os_t os;
+        syscalls(drakvuf_t drakvuf, const void *config, output_format_t output);
+        ~syscalls();
+};
 
 #endif

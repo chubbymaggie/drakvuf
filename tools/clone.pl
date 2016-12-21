@@ -2,7 +2,7 @@
 #
 #********************IMPORTANT DRAKVUF LICENSE TERMS*********************#
 #                                                                        #
-# DRAKVUF Dynamic Malware Analysis System (C) 2014-2015 Tamas K Lengyel. #
+# DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                 #
 # Tamas K Lengyel is hereinafter referred to as the author.              #
 # This program is free software; you may redistribute and/or modify it   #
 # under the terms of the GNU General Public License as published by the  #
@@ -125,7 +125,7 @@ our $lvm_vg = "t0vg";
 our $clone_bridge = "xenbr1";
 # Vif script to pass to clone Xen config.
 # The backend specifies the name of the openvswitch domain.
-our $vif_script = "script=vif-openvswitch,backend=openvswitch";
+our $vif_script = "script=vif-openvswitch,backend=0";
 
 ############################################################
 
