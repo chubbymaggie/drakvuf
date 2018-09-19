@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -128,7 +128,8 @@
 # define HVMOP_TRAP_pri_sw_exc 5
 # define HVMOP_TRAP_sw_exc     6
 
-static const char* debug_type[] = {
+static const char* debug_type[] =
+{
     [HVMOP_TRAP_ext_int] = "external interrupt",
     [HVMOP_TRAP_nmi] = "nmi",
     [HVMOP_TRAP_hw_exc] = "hardware exception",
@@ -137,23 +138,34 @@ static const char* debug_type[] = {
     [HVMOP_TRAP_sw_exc] = "software exception"
 };
 
-event_response_t debug_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info) {
+event_response_t debug_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
 
     debugmon* s = (debugmon*)info->trap->data;
 
-    switch(s->format) {
-    case OUTPUT_CSV:
-        printf("debugmon,%" PRIu32 ",0x%" PRIx64 ",%s,%" PRIi64 ",%" PRIx64 ",%" PRIi32 ",%s\n",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid,
-               info->regs->rip, info->debug->type, debug_type[info->debug->type]);
-        break;
-    default:
-    case OUTPUT_DEFAULT:
-        printf("[DEBUGMON] VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",%s SessionID:%" PRIi64". "
-               "RIP: 0x%" PRIx64". Debug type: %" PRIi32 ",%s\n",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid,
-               info->regs->rip, info->debug->type, debug_type[info->debug->type]);
-        break;
+    switch (s->format)
+    {
+        case OUTPUT_CSV:
+            printf("debugmon," FORMAT_TIMEVAL ",%" PRIu32 ",0x%" PRIx64 ",\"%s\",%" PRIi64 ",%" PRIx64 ",%" PRIi32 ",%s\n",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid,
+                   info->regs->rip, info->debug->type, debug_type[info->debug->type]);
+            break;
+
+        case OUTPUT_KV:
+            printf("debugmon Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\","
+                   "RIP=0x%" PRIx64",DebugType=%" PRIi32 ",DebugTypeStr=\"%s\"\n",
+                   UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name,
+                   info->regs->rip, info->debug->type, debug_type[info->debug->type]);
+            break;
+
+        default:
+        case OUTPUT_DEFAULT:
+            printf("[DEBUGMON] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64". "
+                   "RIP: 0x%" PRIx64". Debug type: %" PRIi32 ",%s\n",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   USERIDSTR(drakvuf), info->proc_data.userid,
+                   info->regs->rip, info->debug->type, debug_type[info->debug->type]);
+            break;
     };
 
     return 0;
@@ -161,7 +173,8 @@ event_response_t debug_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info) {
 
 /* ----------------------------------------------------- */
 
-debugmon::debugmon(drakvuf_t drakvuf, const void *config, output_format_t output) {
+debugmon::debugmon(drakvuf_t drakvuf, const void* config, output_format_t output)
+{
 
     this->format = output;
     this->drakvuf = drakvuf;
@@ -169,7 +182,8 @@ debugmon::debugmon(drakvuf_t drakvuf, const void *config, output_format_t output
     this->debug.data = (void*)this;
     this->debug.type = DEBUG;
 
-    if ( !drakvuf_add_trap(drakvuf, &this->debug) ) {
+    if ( !drakvuf_add_trap(drakvuf, &this->debug) )
+    {
         fprintf(stderr, "Failed to register Debugmon plugin\n");
         throw -1;
     }

@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -120,13 +120,19 @@
 #include "os.h"
 #include "../xen_helper/xen_helper.h"
 
+#include <sys/poll.h>
+
+
 #ifdef DRAKVUF_DEBUG
 
 extern bool verbose;
 
 #define PRINT_DEBUG(...) \
     do { \
-        if(verbose) fprintf (stderr, __VA_ARGS__); \
+        if(verbose) { \
+            eprint_current_time(); \
+            fprintf (stderr, __VA_ARGS__); \
+        }\
     } while (0)
 
 #else
@@ -136,13 +142,24 @@ extern bool verbose;
 
 #define UNUSED(x) (void)(x)
 
-struct drakvuf {
-    char *dom_name;
+struct fd_info
+{
+    int fd;
+    event_cb_t event_cb;
+    void* data;
+};
+typedef struct fd_info* fd_info_t;
+
+
+struct drakvuf
+{
+    char* dom_name;
     domid_t domID;
-    char *rekall_profile;
+    char* rekall_profile;
+    json_object* rekall_profile_json;
     os_t os;
 
-    xen_interface_t *xen;
+    xen_interface_t* xen;
     os_interface_t osi;
     uint16_t altp2m_idx, altp2m_idr;
 
@@ -157,93 +174,111 @@ struct drakvuf {
     vmi_event_t mem_event;
     vmi_event_t debug_event;
     vmi_event_t cpuid_event;
-    vmi_event_t *step_event[16];
+    vmi_event_t* step_event[16];
+    drakvuf_trap_t guard0;
 
-    size_t *offsets;
+    size_t* offsets;
+    size_t* sizes;
 
     // Processing trap removals in trap callbacks
     // is problematic so we save all such requests
     // in a list to be processed after all callbacks
     // are finished.
     bool in_callback;
-    GHashTable *remove_traps;
+    GHashTable* remove_traps;
 
     int interrupted;
     page_mode_t pm;
     unsigned int vcpus;
-    unsigned int init_memsize;
-    unsigned int memsize;
+    uint64_t init_memsize;
+    xen_pfn_t max_gpfn;
     addr_t kernbase;
+    addr_t kdtb;
+
+    int address_width;
+
+    x86_registers_t* regs[16]; // vCPU specific registers recorded during the last event
     addr_t kpcr[16]; // vCPU specific kpcr recorded on mov-to-cr3
 
-    GHashTable *remapped_gfns; // Key: gfn
-                               // val: remapped gfn
+    GHashTable* remapped_gfns; // Key: gfn
+    // val: remapped gfn
 
-    GHashTable *breakpoint_lookup_pa;   // key: PA of trap
-                                        // val: struct breakpoint
-    GHashTable *breakpoint_lookup_gfn;  // key: gfn (size uint64_t)
-                                        // val: GSList of addr_t* for trap locations
-    GHashTable *breakpoint_lookup_trap; // key: trap pointer
-                                        // val: struct breakpoint
+    GHashTable* breakpoint_lookup_pa;   // key: PA of trap
+    // val: struct breakpoint
+    GHashTable* breakpoint_lookup_gfn;  // key: gfn (size uint64_t)
+    // val: GSList of addr_t* for trap locations
+    GHashTable* breakpoint_lookup_trap; // key: trap pointer
+    // val: struct breakpoint
 
-    GHashTable *memaccess_lookup_gfn;  // key: gfn of trap
-                                       // val: struct memaccess
-    GHashTable *memaccess_lookup_trap; // key: trap pointer
-                                       // val: struct memaccess
+    GHashTable* memaccess_lookup_gfn;  // key: gfn of trap
+    // val: struct memaccess
+    GHashTable* memaccess_lookup_trap; // key: trap pointer
+    // val: struct memaccess
 
-    GSList *cr0, *cr3, *cr4, *debug, *cpuid;
+    GSList* cr0, *cr3, *cr4, *debug, *cpuid;
+
+    GSList* event_fd_info;     // the list of registered event FDs
+    struct pollfd* event_fds;  // auto-generated pollfd for poll()
+    int event_fd_cnt;          // auto-generated for poll()
+    fd_info_t fd_info_lookup;  // auto-generated for fast drakvuf_loop lookups
 };
 
-struct breakpoint {
+struct breakpoint
+{
     addr_t pa;
     drakvuf_trap_t guard, guard2;
     bool doubletrap;
-} __attribute__ ((packed));
-
-struct memaccess {
+};
+struct memaccess
+{
     addr_t gfn;
     bool guard2;
     vmi_mem_access_t access;
-} __attribute__ ((packed));
+};
 
-struct wrapper {
+struct wrapper
+{
     trap_type_t type;
     drakvuf_t drakvuf;
-    GSList *traps; /* List of DRAKVUF traps registered for this event */
-    union {
+    GSList* traps; /* List of DRAKVUF traps registered for this event */
+    union
+    {
         struct memaccess memaccess;
         struct breakpoint breakpoint;
     };
-} __attribute__ ((packed));
+};
 
-struct free_trap_wrapper {
+struct free_trap_wrapper
+{
     unsigned int counter;
-    drakvuf_trap_t *trap;
+    drakvuf_trap_t* trap;
     drakvuf_trap_free_t free_routine;
 };
 
-struct remapped_gfn {
+struct remapped_gfn
+{
     xen_pfn_t o;
     xen_pfn_t r;
     bool active;
 };
 
-struct memcb_pass {
+struct memcb_pass
+{
     drakvuf_t drakvuf;
     uint64_t gfn;
     addr_t pa;
-    char *procname;
-    int64_t sessionid;
-    struct remapped_gfn *remapped_gfn;
+    proc_data_t proc_data ;
+    struct remapped_gfn* remapped_gfn;
     vmi_mem_access_t access;
-    GSList *traps;
+    GSList* traps;
 };
 
 void drakvuf_force_resume (drakvuf_t drakvuf);
 
-char *drakvuf_get_current_process_name(drakvuf_t drakvuf,
+char* drakvuf_get_current_process_name(drakvuf_t drakvuf,
                                        uint64_t vcpu_id);
 
-int64_t drakvuf_get_current_process_sessionid(drakvuf_t drakvuf,
-                                              uint64_t vcpu_id);
+int64_t drakvuf_get_current_process_userid(drakvuf_t drakvuf,
+        uint64_t vcpu_id);
+
 #endif

@@ -114,106 +114,183 @@
 #include "libdrakvuf.h"
 #include "private.h"
 
-status_t rekall_lookup(
-        const char *rekall_profile,
-        const char *symbol,
-        const char *subsymbol,
-        addr_t *rva,
-        addr_t *size)
+static bool rekall_lookup_in_json(
+    const char* symbol,
+    const char* subsymbol,
+    addr_t* rva,
+    addr_t* size,
+    json_object* rekall_profile_json)
 {
-    status_t ret = VMI_FAILURE;
-    if(!rekall_profile || !symbol) {
+    bool ret = false;
+
+    if (!rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
         return ret;
     }
 
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile '%s' couldn't be opened!\n", rekall_profile);
+    if (!symbol)
+    {
         return ret;
     }
 
-    if(!subsymbol && !size) {
-        json_object *constants = NULL, *jsymbol = NULL;
-        if (!json_object_object_get_ex(root, "$CONSTANTS", &constants)) {
+    if (!subsymbol && !size)
+    {
+        json_object* constants = NULL, *jsymbol = NULL;
+        if (!json_object_object_get_ex(rekall_profile_json, "$CONSTANTS", &constants))
+        {
             PRINT_DEBUG("Rekall profile: no $CONSTANTS section found\n");
             goto exit;
         }
 
-        if (!json_object_object_get_ex(constants, symbol, &jsymbol)){
+        if (!json_object_object_get_ex(constants, symbol, &jsymbol))
+        {
             PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", symbol);
             goto exit;
         }
 
         *rva = json_object_get_int64(jsymbol);
 
-        ret = VMI_SUCCESS;
-    } else {
-        json_object *structs = NULL, *jstruct = NULL, *jstruct2 = NULL, *jmember = NULL, *jvalue = NULL;
-        if (!json_object_object_get_ex(root, "$STRUCTS", &structs)) {
+        ret = true;
+    }
+    else
+    {
+        json_object* structs = NULL, *jstruct = NULL, *jstruct2 = NULL, *jmember = NULL, *jvalue = NULL;
+        if (!json_object_object_get_ex(rekall_profile_json, "$STRUCTS", &structs))
+        {
             PRINT_DEBUG("Rekall profile: no $STRUCTS section found\n");
             goto exit;
         }
-        if (!json_object_object_get_ex(structs, symbol, &jstruct)) {
+        if (!json_object_object_get_ex(structs, symbol, &jstruct))
+        {
             PRINT_DEBUG("Rekall profile: no '%s' found\n", symbol);
             goto exit;
         }
 
-        if (size) {
-            json_object *jsize = json_object_array_get_idx(jstruct, 0);
+        if (size)
+        {
+            json_object* jsize = json_object_array_get_idx(jstruct, 0);
             *size = json_object_get_int64(jsize);
 
-            ret = VMI_SUCCESS;
+            ret = true;
             goto exit;
         }
 
         jstruct2 = json_object_array_get_idx(jstruct, 1);
-        if (!jstruct2) {
+        if (!jstruct2)
+        {
             PRINT_DEBUG("Rekall profile: struct '%s' has no second element\n", symbol);
             goto exit;
         }
 
-        if (!json_object_object_get_ex(jstruct2, subsymbol, &jmember)) {
+        if (!json_object_object_get_ex(jstruct2, subsymbol, &jmember))
+        {
             PRINT_DEBUG("Rekall profile: '%s' has no '%s' member\n", symbol, subsymbol);
             goto exit;
         }
 
         jvalue = json_object_array_get_idx(jmember, 0);
-        if (!jvalue) {
+        if (!jvalue)
+        {
             PRINT_DEBUG("Rekall profile: '%s'.'%s' has no RVA defined\n", symbol, subsymbol);
             goto exit;
         }
 
         *rva = json_object_get_int64(jvalue);
 
-        ret = VMI_SUCCESS;
+        ret = true;
     }
 
 exit:
-    json_object_put(root);
     return ret;
 }
 
-symbols_t* drakvuf_get_symbols_from_rekall(const char *rekall_profile)
+bool rekall_lookup(
+    json_object* rekall_profile_json,
+    const char* symbol,
+    const char* subsymbol,
+    addr_t* rva,
+    addr_t* size)
+{
+    bool ret = false;
+
+    if (!rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
+        return ret;
+    }
+
+    if (!symbol)
+    {
+        return ret;
+    }
+
+    ret = rekall_lookup_in_json(symbol, subsymbol, rva, size, rekall_profile_json);
+
+    return ret;
+}
+
+bool rekall_lookup_array(
+    json_object* rekall_profile_json,
+    const char* symbol_subsymbol_array[][2],
+    addr_t array_size,
+    addr_t* rva,
+    addr_t* size)
+{
+    bool ret = false;
+
+    if (!rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
+        return ret;
+    }
+
+    int errors = 0;
+    for (size_t i = 0; i < array_size; i++)
+    {
+        if (!rekall_lookup_in_json(
+                    symbol_subsymbol_array[i][0],
+                    symbol_subsymbol_array[i][1],
+                    &rva[i],
+                    size,
+                    rekall_profile_json)
+           )
+        {
+            errors++;
+            PRINT_DEBUG("Failed to find offset for %s:%s\n",
+                        symbol_subsymbol_array[i][0], symbol_subsymbol_array[i][1]);
+        }
+    }
+
+    if (errors == 0)
+        ret = true;
+
+    return ret;
+}
+
+symbols_t* rekall_get_symbols_from_rekall(json_object* rekall_profile_json)
 {
 
-    symbols_t *ret = g_malloc0(sizeof(symbols_t));;
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
+    symbols_t* ret = g_malloc0(sizeof(symbols_t));
+    if (!rekall_profile_json)
+    {
         fprintf(stderr, "Rekall profile couldn't be opened!\n");
         goto err_exit;
     }
 
-    json_object *functions = NULL;
-    if (!json_object_object_get_ex(root, "$FUNCTIONS", &functions)) {
+    json_object* functions = NULL;
+    if (!json_object_object_get_ex(rekall_profile_json, "$FUNCTIONS", &functions))
+    {
         PRINT_DEBUG("Rekall profile: no $FUNCTIONS section found\n");
-        if (!json_object_object_get_ex(root, "$CONSTANTS", &functions)) {
+        if (!json_object_object_get_ex(rekall_profile_json, "$CONSTANTS", &functions))
+        {
             PRINT_DEBUG("Rekall profile: no $CONSTANTS section found\n");
             goto err_exit;
         }
     }
 
     ret->count = json_object_object_length(functions);
-    ret->symbols = g_malloc0(sizeof(symbols_t) * ret->count);
+    ret->symbols = g_malloc0(sizeof(symbol_t) * ret->count);
 
     PRINT_DEBUG("Rekall profile defines %lu symbols\n", ret->count);
 
@@ -221,7 +298,8 @@ symbols_t* drakvuf_get_symbols_from_rekall(const char *rekall_profile)
     struct json_object_iterator itEnd = json_object_iter_end(functions);
     uint32_t i=0;
 
-    while (!json_object_iter_equal(&it, &itEnd) && i < ret->count) {
+    while (!json_object_iter_equal(&it, &itEnd) && i < ret->count)
+    {
         ret->symbols[i].name = g_strdup(json_object_iter_peek_name(&it));
         ret->symbols[i].rva = json_object_get_int64(json_object_iter_peek_value(&it));
 
@@ -233,34 +311,36 @@ symbols_t* drakvuf_get_symbols_from_rekall(const char *rekall_profile)
         json_object_iter_next(&it);
     }
 
-    json_object_put(root);
-
     return ret;
 
 err_exit:
-    if ( root )
-        json_object_put(root);
-
     free(ret);
     return NULL;
 }
-
-os_t rekall_get_os_type(const char *rekall_profile)
+symbols_t* drakvuf_get_symbols_from_rekall(drakvuf_t drakvuf)
 {
+    return rekall_get_symbols_from_rekall(drakvuf->rekall_profile_json);
+}
+
+os_t rekall_get_os_type(json_object* rekall_profile_json)
+{
+
     os_t ret = VMI_OS_UNKNOWN;
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
+    if (!rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
         goto err_exit;
     }
 
-    json_object *metadata = NULL, *profileclass = NULL;
-    if (!json_object_object_get_ex(root, "$METADATA", &metadata)) {
+    json_object* metadata = NULL, *profileclass = NULL;
+    if (!json_object_object_get_ex(rekall_profile_json, "$METADATA", &metadata))
+    {
         PRINT_DEBUG("Rekall profile: no $METADATA section found\n");
         goto err_exit;
     }
 
-    if (!json_object_object_get_ex(metadata, "ProfileClass", &profileclass)){
+    if (!json_object_object_get_ex(metadata, "ProfileClass", &profileclass))
+    {
         PRINT_DEBUG("Rekall profile: $METADATA/ProfileClass not found\n");
         goto err_exit;
     }
@@ -275,79 +355,116 @@ os_t rekall_get_os_type(const char *rekall_profile)
         ret = VMI_OS_WINDOWS;
 
 err_exit:
-    if ( root )
-        json_object_put(root);
 
     return ret;
 }
 
-status_t drakvuf_get_function_rva(const char *rekall_profile, const char *function, addr_t *rva)
+int drakvuf_get_os_build_date(drakvuf_t drakvuf)
 {
+    int ret = 0;
+    int year = 0, month = 0, day = 0;
+    char junk[15] = {'\0'};
+    char build_date[10] = {'\0'};
 
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
+    if (!drakvuf->rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile is NULL!\n");
         goto err_exit;
     }
 
-    json_object *functions = NULL, *jsymbol = NULL;
-    if (!json_object_object_get_ex(root, "$FUNCTIONS", &functions)) {
+    json_object* metadata = NULL, *timestamp = NULL;
+    if (!json_object_object_get_ex(drakvuf->rekall_profile_json, "$METADATA", &metadata))
+    {
+        PRINT_DEBUG("Rekall profile: no $METADATA section found\n");
+        goto err_exit;
+    }
+
+    if (!json_object_object_get_ex(metadata, "Timestamp", &timestamp))
+    {
+        PRINT_DEBUG("Rekall profile: $METADATA/Timestamp not found\n");
+        goto err_exit;
+    }
+
+    const char* ts = json_object_get_string(timestamp);
+
+    // At this point timestamp should have the following format : "2018-07-14 03:53:24Z"
+    sscanf(ts, "%d%c%d%c%d %15s", &year, junk, &month, junk, &day, junk);
+    g_snprintf(build_date, sizeof(build_date), "%04d%02d%02d", year, month, day);
+
+    ret = (int)strtol(build_date, NULL, 10);
+
+err_exit:
+    return ret;
+}
+
+bool rekall_get_function_rva(json_object* rekall_profile_json, const char* function, addr_t* rva)
+{
+    if (!rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
+        goto err_exit;
+    }
+
+    json_object* functions = NULL, *jsymbol = NULL;
+    if (!json_object_object_get_ex(rekall_profile_json, "$FUNCTIONS", &functions))
+    {
         PRINT_DEBUG("Rekall profile: no $FUNCTIONS section found\n");
         goto err_exit;
     }
 
-    if (!json_object_object_get_ex(functions, function, &jsymbol)) {
+    if (!json_object_object_get_ex(functions, function, &jsymbol))
+    {
         PRINT_DEBUG("Rekall profile: no '%s' found\n", function);
         goto err_exit;
     }
 
     *rva = json_object_get_int64(jsymbol);
-    json_object_put(root);
-    return VMI_SUCCESS;
+    return true;
 
 err_exit:
-    if ( root )
-        json_object_put(root);
-
-    return VMI_FAILURE;
+    return false;
 }
 
-status_t drakvuf_get_constant_rva(const char *rekall_profile, const char *constant, addr_t *rva)
+bool drakvuf_get_function_rva(drakvuf_t drakvuf, const char* function, addr_t* rva)
 {
+    return rekall_get_function_rva(drakvuf->rekall_profile_json, function, rva);
+}
 
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
+bool drakvuf_get_constant_rva(drakvuf_t drakvuf, const char* constant, addr_t* rva)
+{
+    if (!drakvuf->rekall_profile_json)
+    {
+        fprintf(stderr, "Rekall profile json is NULL!\n");
         goto err_exit;
     }
 
-    json_object *constants = NULL, *jsymbol = NULL;
-    if (!json_object_object_get_ex(root, "$CONSTANTS", &constants)) {
+    json_object* constants = NULL, *jsymbol = NULL;
+    if (!json_object_object_get_ex(drakvuf->rekall_profile_json, "$CONSTANTS", &constants))
+    {
         PRINT_DEBUG("Rekall profile: no $CONSTANTS section found\n");
         goto err_exit;
     }
 
-    if (!json_object_object_get_ex(constants, constant, &jsymbol)) {
+    if (!json_object_object_get_ex(constants, constant, &jsymbol))
+    {
         PRINT_DEBUG("Rekall profile: no '%s' found\n", constant);
         goto err_exit;
     }
 
     *rva = json_object_get_int64(jsymbol);
-    json_object_put(root);
-    return VMI_SUCCESS;
+    return true;
 
 err_exit:
-    if ( root )
-        json_object_put(root);
-
-    return VMI_FAILURE;
+    return false;
 }
 
-void drakvuf_free_symbols(symbols_t *symbols) {
+void drakvuf_free_symbols(symbols_t* symbols)
+{
     uint32_t i;
     if (!symbols) return;
 
-    for (i=0; i < symbols->count; i++) {
+    for (i=0; i < symbols->count; i++)
+    {
         free((char*)symbols->symbols[i].name);
     }
     free(symbols->symbols);

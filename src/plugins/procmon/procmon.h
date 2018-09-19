@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -102,55 +102,41 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifndef OBJMON_PRIVATE_H
-#define OBJMON_PRIVATE_H
+#ifndef PROCMON_H
+#define PROCMON_H
 
-#define WIN7_TYPEINDEX_LAST 44
-static const char *win7_typeindex[] = {
-         [0] = "",
-         [1] = "",
-         [2] = "Type",
-         [3] = "Directory",
-         [4] = "SymbolicLink",
-         [5] = "Token",
-         [6] = "Job",
-         [7] = "Process",
-         [8] = "Thread",
-         [9] = "UserApcReserve",
-         [10] = "IoCompletionReserve",
-         [11] = "DebugObject",
-         [12] = "Event",
-         [13] = "EventPair",
-         [14] = "Mutant",
-         [15] = "Callback",
-         [16] = "Semaphore",
-         [17] = "Timer",
-         [18] = "Profile",
-         [19] = "KeyedEvent",
-         [20] = "WindowStation",
-         [21] = "Desktop",
-         [22] = "TpWorkerFactory",
-         [23] = "Adapter",
-         [24] = "Controller",
-         [25] = "Device",
-         [26] = "Driver",
-         [27] = "IoCompletion",
-         [28] = "File",
-         [29] = "TmTm",
-         [30] = "TmTx",
-         [31] = "TmRm",
-         [32] = "TmEn",
-         [33] = "Section",
-         [34] = "Session",
-         [35] = "Key",
-         [36] = "ALPC Port",
-         [37] = "PowerRequest",
-         [38] = "WmiGuid",
-         [39] = "EtwRegistration",
-         [40] = "EtwConsumer",
-         [41] = "FilterConnectionPort",
-         [42] = "FilterCommunicationPort",
-         [43] = "PcwObject"
+#include <glib.h>
+#include "plugins/private.h"
+#include "plugins/plugins.h"
+
+class procmon: public plugin
+{
+public:
+    drakvuf_trap_t traps[2] =
+    {
+        [0 ... 1] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
+        }
+    };
+
+    GSList* result_traps;
+
+    output_format_t format;
+
+    addr_t command_line;
+    addr_t image_path_name;
+    addr_t dll_path;
+    addr_t current_directory_handle;
+    addr_t current_directory_dospath;
+    addr_t object_header_body;
+
+    procmon(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~procmon();
 };
 
 #endif

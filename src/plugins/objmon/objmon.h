@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,24 +105,28 @@
 #ifndef OBJMON_H
 #define OBJMON_H
 
+#include "plugins/private.h"
 #include "plugins/plugins.h"
 
-class objmon: public plugin {
-    public:
-        output_format_t format;
-        drakvuf_trap_t trap = {
-            .breakpoint.lookup_type = LOOKUP_PID,
-            .breakpoint.pid = 4,
-            .breakpoint.addr_type = ADDR_RVA,
-            .breakpoint.module = "ntoskrnl.exe",
-            .name = "ObCreateObject",
-            .type = BREAKPOINT,
-            .data = (void*)this,
-        };
-        addr_t typeindex_offset;
+class objmon: public plugin
+{
+public:
+    output_format_t format;
+    page_mode_t pm;
+    drakvuf_trap_t trap =
+    {
+        .breakpoint.lookup_type = LOOKUP_PID,
+        .breakpoint.pid = 4,
+        .breakpoint.addr_type = ADDR_RVA,
+        .breakpoint.module = "ntoskrnl.exe",
+        .name = "ObCreateObject",
+        .type = BREAKPOINT,
+        .data = (void*)this,
+    };
+    addr_t key_offset;
 
-        objmon(drakvuf_t drakvuf, const void *config, output_format_t output);
-        ~objmon();
+    objmon(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~objmon();
 };
 
 #endif

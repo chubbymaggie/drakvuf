@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -122,67 +122,92 @@
 #include "private.h"
 #include "poolmon.h"
 
-static GTree* pooltag_build_tree() {
-    GTree *pooltags = g_tree_new((GCompareFunc) strcmp);
+static GTree* pooltag_build_tree()
+{
+    GTree* pooltags = g_tree_new((GCompareFunc) strcmp);
 
     uint32_t i = 0;
-    for (; i < TAG_COUNT; i++) {
+    for (; i < TAG_COUNT; i++)
+    {
         g_tree_insert(pooltags, (char*) tags[i].tag,
-                (char*) &tags[i]);
+                      (char*) &tags[i]);
     }
 
     return pooltags;
 }
 
-static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
-    poolmon *p = (poolmon*)info->trap->data;
+static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    poolmon* p = (poolmon*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-    page_mode_t pm = vmi_get_page_mode(vmi);
+    page_mode_t pm = vmi_get_page_mode(vmi, 0);
     reg_t pool_type, size;
     char tag[5] = { [0 ... 4] = '\0' };
+    struct pooltag* s = NULL;
+    const char* pool_type_str;
 
     access_context_t ctx;
     ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
     ctx.dtb = info->regs->cr3;
 
-    if (pm == VMI_PM_IA32E) {
+    if (pm == VMI_PM_IA32E)
+    {
         pool_type = info->regs->rcx;
         size = info->regs->rdx;
         *(reg_t*)tag = info->regs->r8;
-    } else {
-        ctx.addr = info->regs->rsp+12;
-        vmi_read_32(vmi, &ctx, (uint32_t*)tag);
-        ctx.addr = info->regs->rsp+8;
-        vmi_read_32(vmi, &ctx, (uint32_t*)&size);
-        ctx.addr = info->regs->rsp+4;
-        vmi_read_32(vmi, &ctx, (uint32_t*)&pool_type);
     }
-
-    struct pooltag *s = (struct pooltag*)g_tree_lookup(p->pooltag_tree, tag);
-
-    switch(p->format) {
-    case OUTPUT_CSV:
+    else
     {
-        printf("poolmon,%" PRIu32 ",0x%" PRIx64 ",%s,%" PRIi64 ",%s,%s,%" PRIu64 "",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid, tag,
-               pool_type<MaxPoolType ? pool_types[pool_type] : "unknown_pool_type", size);
-        if (s)
-            printf(",%s,%s", s->source, s->description);
-        break;
-    }
-    default:
-    case OUTPUT_DEFAULT:
-        printf("[POOLMON] vCPU:%" PRIu32 " CR3:0x%" PRIx64 ",%s SessionID:%" PRIi64 " %s (type: %s, size: %" PRIu64 ")",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid, tag,
-               pool_type<MaxPoolType ? pool_types[pool_type] : "unknown_pool_type", size);
-        if (s)
-            printf(": %s,%s", s->source, s->description);
+        ctx.addr = info->regs->rsp+12;
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*)tag) )
+            goto done;
 
-        break;
-    };
+        ctx.addr = info->regs->rsp+8;
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*)&size) )
+            goto done;
+
+        ctx.addr = info->regs->rsp+4;
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*)&pool_type) )
+            goto done;
+    }
+
+    s = (struct pooltag*)g_tree_lookup(p->pooltag_tree, tag);
+
+    pool_type_str = pool_type<MaxPoolType ? pool_types[pool_type] : "unknown_pool_type";
+
+    switch (p->format)
+    {
+        case OUTPUT_CSV:
+            printf("poolmon," FORMAT_TIMEVAL ",%" PRIu32 ",0x%" PRIx64 ",\"%s\",%" PRIi64 ",%s,%s,%" PRIu64 "",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid, tag,
+                   pool_type_str, size);
+            if (s)
+                printf(",%s,%s", s->source, s->description);
+            break;
+
+        case OUTPUT_KV:
+            printf("poolmon Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\","
+                   "Tag=%s,Type=%s,Size=%" PRIu64,
+                   UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name,
+                   tag, pool_type_str, size);
+            if (s)
+                printf(",Source=%s,Description=%s", s->source, s->description);
+            break;
+
+        default:
+        case OUTPUT_DEFAULT:
+            printf("[POOLMON] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64 " %s (type: %s, size: %" PRIu64 ")",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   USERIDSTR(drakvuf), info->proc_data.userid, tag,
+                   pool_type_str, size);
+            if (s)
+                printf(": %s,%s", s->source, s->description);
+            break;
+    }
 
     printf("\n");
 
+done:
     drakvuf_release_vmi(drakvuf);
     return 0;
 }
@@ -203,19 +228,16 @@ static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
 /* ----------------------------------------------------- */
 
-poolmon::poolmon(drakvuf_t drakvuf, const void *config, output_format_t output) {
-    const char *rekall_profile = (const char*)config;
+poolmon::poolmon(drakvuf_t drakvuf, const void* config, output_format_t output)
+{
     this->pooltag_tree = pooltag_build_tree();
 
     this->trap.breakpoint.lookup_type = LOOKUP_PID;
     this->trap.breakpoint.pid = 4;
     this->trap.breakpoint.addr_type = ADDR_RVA;
-    if (VMI_FAILURE == drakvuf_get_function_rva(rekall_profile,
-                                                "ExAllocatePoolWithTag",
-                                                &this->trap.breakpoint.rva))
-    {
+
+    if ( !drakvuf_get_function_rva(drakvuf,"ExAllocatePoolWithTag", &this->trap.breakpoint.rva) )
         throw -1;
-    }
 
     this->trap.breakpoint.module = "ntoskrnl.exe";
     this->trap.name = "ExAllocatePoolWithTag";
@@ -228,7 +250,8 @@ poolmon::poolmon(drakvuf_t drakvuf, const void *config, output_format_t output) 
         throw -1;
 }
 
-poolmon::~poolmon() {
-    if(this->pooltag_tree)
+poolmon::~poolmon()
+{
+    if (this->pooltag_tree)
         g_tree_destroy(this->pooltag_tree);
 }

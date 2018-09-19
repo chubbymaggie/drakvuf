@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,57 +105,319 @@
 #include <config.h>
 #include <glib.h>
 #include <inttypes.h>
+#include <libvmi/libvmi.h>
 #include "syscalls.h"
+#include "winscproto.h"
 
-static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
+static event_response_t linux_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
 
-    syscalls *s = (syscalls*)info->trap->data;
+    syscalls* s = (syscalls*)info->trap->data;
+    GTimeVal t;
+    g_get_current_time(&t);
 
-    switch(s->format) {
-    case OUTPUT_CSV:
-        printf("syscall,%" PRIu32" 0x%" PRIx64 ",%s,%" PRIi64 ",%s,%s\n",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid, info->trap->breakpoint.module, info->trap->name);
-        break;
-    default:
-    case OUTPUT_DEFAULT:
-        printf("[SYSCALL] vCPU:%" PRIu32 " CR3:0x%" PRIx64 ",%s SessionID:%" PRIi64" %s!%s\n",
-               info->vcpu, info->regs->cr3, info->procname, info->sessionid, info->trap->breakpoint.module, info->trap->name);
-        break;
+    switch (s->format)
+    {
+        case OUTPUT_CSV:
+            printf("syscall," FORMAT_TIMEVAL ",%" PRIu32" 0x%" PRIx64 ",\"%s\",%" PRIi64 ",%s,%s\n",
+                   UNPACK_TIMEVAL(t), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid, info->trap->breakpoint.module, info->trap->name);
+            break;
+        case OUTPUT_KV:
+            printf("syscall Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\",Method=%s\n",
+                   UNPACK_TIMEVAL(t), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name, info->trap->name);
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            printf("[SYSCALL] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64" %s!%s\n",
+                   UNPACK_TIMEVAL(t), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   USERIDSTR(drakvuf), info->proc_data.userid,
+                   info->trap->breakpoint.module, info->trap->name);
+            break;
     }
 
     return 0;
 }
 
-static GSList* create_trap_config(drakvuf_t drakvuf, syscalls *s, symbols_t *symbols, const char* rekall_profile) {
+static char* extract_utf8_string(drakvuf_t drakvuf, drakvuf_trap_info_t* info, const win_arg_t& arg, addr_t val)
+{
+    if ( arg.dir == DIR_IN || arg.dir == DIR_INOUT )
+    {
+        if ( arg.type == PUNICODE_STRING )
+        {
+            unicode_string_t* us = drakvuf_read_unicode(drakvuf, info, val);
+            if ( us )
+            {
+                char* str = (char*)us->contents;
+                us->contents = nullptr;
+                vmi_free_unicode_str(us);
+                return str;
+            }
+        }
 
-    GSList *ret = NULL;
-    unsigned long i;
+        if ( !strcmp(arg.name, "FileHandle") )
+        {
+            char* filename = drakvuf_get_filename_from_handle(drakvuf, info, val);
+            if ( filename ) return filename;
+        }
+    }
+
+    return nullptr;
+}
+
+static void print_header(output_format_t format, drakvuf_t drakvuf, const drakvuf_trap_info_t* info)
+{
+    switch (format)
+    {
+        case OUTPUT_CSV:
+            printf("syscall," FORMAT_TIMEVAL ",%" PRIu32" 0x%" PRIx64 ",\"%s\",%" PRIi64 ",%s,%s",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   info->proc_data.userid, info->trap->breakpoint.module, info->trap->name);
+            break;
+        case OUTPUT_KV:
+            printf("syscall Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\",Method=%s",
+                   UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name,
+                   info->trap->name);
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            printf("[SYSCALL] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64" %s!%s",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   USERIDSTR(drakvuf), info->proc_data.userid,
+                   info->trap->breakpoint.module, info->trap->name);
+            break;
+    }
+}
+
+static void print_nargs(output_format_t format, uint32_t nargs)
+{
+    switch (format)
+    {
+        case OUTPUT_CSV:
+            printf(",%" PRIu32, nargs);
+            break;
+        case OUTPUT_KV:
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            printf(" Arguments: %" PRIu32 "\n", nargs);
+            break;
+    }
+}
+
+static void print_csv_arg(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const win_arg_t& arg, addr_t val, const char* str)
+{
+    printf(",%s,%s,%s,", win_arg_direction_names[arg.dir], win_type_names[arg.type], arg.name);
+
+    if ( 4 == s->reg_size )
+        printf("0x%" PRIx32 ",", static_cast<uint32_t>(val));
+    else
+        printf("0x%" PRIx64 ",", static_cast<uint64_t>(val));
+
+    if ( str )
+    {
+        printf("%s", str);
+    }
+
+    printf(",");
+}
+
+static void print_kv_arg(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const win_arg_t& arg, addr_t val, const char* str)
+{
+    if ( str )
+    {
+        printf(",%s=\"%s\"", arg.name, str);
+        return;
+    }
+
+    if ( 4 == s->reg_size )
+        printf(",%s=0x%" PRIx32, arg.name, static_cast<uint32_t>(val));
+    else
+        printf(",%s=0x%" PRIx64, arg.name, static_cast<uint64_t>(val));
+}
+
+static void print_default_arg(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const win_arg_t& arg, addr_t val, const char* str)
+{
+    printf("\t%s %s %s: ", win_arg_direction_names[arg.dir], win_type_names[arg.type], arg.name);
+
+    if ( 4 == s->reg_size )
+        printf("0x%" PRIx32, static_cast<uint32_t>(val));
+    else
+        printf("0x%" PRIx64, static_cast<uint64_t>(val));
+
+    if ( str )
+    {
+        printf(" -> '%s'", str);
+    }
+
+    printf("\n");
+}
+
+static void print_args(syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info, const win_syscall_t* wsc, unsigned char* args_data)
+{
+    size_t nargs = wsc->num_args;
+    uint32_t* args_data32 = (uint32_t*)args_data;
+    uint64_t* args_data64 = (uint64_t*)args_data;
+
+    for ( size_t i=0; i<nargs; i++ )
+    {
+        addr_t val = ( 4 == s->reg_size ) ? args_data32[i] : args_data64[i];
+        char* str = extract_utf8_string(drakvuf, info, wsc->args[i], val);
+
+        switch (s->format)
+        {
+            case OUTPUT_CSV:
+                print_csv_arg(s, drakvuf, info, wsc->args[i], val, str);
+                break;
+            case OUTPUT_KV:
+                print_kv_arg(s, drakvuf, info, wsc->args[i], val, str);
+                break;
+            default:
+            case OUTPUT_DEFAULT:
+                print_default_arg(s, drakvuf, info, wsc->args[i], val, str);
+                break;
+        }
+
+        g_free(str);
+    }
+}
+
+static void print_footer(output_format_t format, uint32_t nargs)
+{
+    switch (format)
+    {
+        case OUTPUT_CSV:
+            printf("\n");
+            break;
+        case OUTPUT_KV:
+            printf("\n");
+            break;
+        default:
+        case OUTPUT_DEFAULT:
+            if ( nargs == 0 )
+                printf("\n");
+            break;
+    }
+}
+
+static event_response_t win_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    unsigned int nargs = 0;
+    size_t size = 0;
+    unsigned char* buf = NULL; // pointer to buffer to hold argument values
+
+    syscall_wrapper_t* wrapper = (syscall_wrapper_t*)info->trap->data;
+    syscalls* s = wrapper->sc;
+    const win_syscall_t* wsc = NULL;
+
+    if (wrapper->syscall_index>-1 )
+    {
+        // need to malloc buf before setting type of each array cell
+        wsc = &win_syscalls[wrapper->syscall_index];
+        nargs = wsc->num_args;
+        size = s->reg_size * nargs;
+        buf = (unsigned char*)g_malloc(sizeof(char)*size);
+    }
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    access_context_t ctx;
+    ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+    ctx.dtb = info->regs->cr3;
+
+    if ( nargs )
+    {
+        // get arguments only if we know how many to get
+
+        if ( 4 == s->reg_size )
+        {
+            // 32 bit os
+            ctx.addr = info->regs->rsp + s->reg_size;  // jump over base pointer
+
+            // multiply num args by 4 for 32 bit systems to get the number of bytes we need
+            // to read from the stack.  assumes standard calling convention (cdecl) for the
+            // visual studio compile.
+            if ( VMI_FAILURE == vmi_read(vmi, &ctx, size, buf, NULL) )
+                goto exit;
+        }
+
+        if ( 8 == s->reg_size )
+        {
+            uint64_t* buf64 = (uint64_t*)buf;
+            if ( nargs > 0 )
+                buf64[0] = info->regs->rcx;
+            if ( nargs > 1 )
+                buf64[1] = info->regs->rdx;
+            if ( nargs > 2 )
+                buf64[2] = info->regs->r8;
+            if ( nargs > 3 )
+                buf64[3] = info->regs->r9;
+            if ( nargs > 4 )
+            {
+                // first 4 agrs passed via rcx, rdx, r8, and r9
+                ctx.addr = info->regs->rsp+0x28;  // jump over homing space + base pointer
+                size_t sp_size = s->reg_size * (nargs-4);
+                if ( VMI_FAILURE == vmi_read(vmi, &ctx, sp_size, &(buf64[4]), NULL) )
+                    goto exit;
+            }
+        }
+    }
+
+    print_header(s->format, drakvuf, info);
+    if ( nargs )
+    {
+        print_nargs(s->format, nargs);
+        print_args(s, drakvuf, info, wsc, buf);
+    }
+    print_footer(s->format, nargs);
+
+exit:
+    g_free(buf);
+    drakvuf_release_vmi(drakvuf);
+    return 0;
+}
+
+static GSList* create_trap_config(drakvuf_t drakvuf, syscalls* s, symbols_t* symbols)
+{
+
+    GSList* ret = NULL;
+    unsigned long i,j;
 
     PRINT_DEBUG("Received %lu symbols\n", symbols->count);
 
-    if ( s->os == VMI_OS_WINDOWS ) {
-        addr_t module_list, ntoskrnl;
+    if ( s->os == VMI_OS_WINDOWS )
+    {
+        addr_t ntoskrnl = drakvuf_get_kernel_base(drakvuf);
 
-        vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+        if ( !ntoskrnl )
+            return NULL;
 
-        if(VMI_FAILURE == vmi_read_addr_ksym(vmi, (char *)"PsLoadedModuleList", &module_list))
-            goto done;
-
-        if( !drakvuf_get_module_base_addr(drakvuf, module_list, "ntoskrnl.exe", &ntoskrnl) )
-            goto done;
-
-        for (i=0; i < symbols->count; i++) {
-
-            const struct symbol *symbol = &symbols->symbols[i];
+        for (i=0; i < symbols->count; i++)
+        {
+            const struct symbol* symbol = &symbols->symbols[i];
 
             if (strncmp(symbol->name, "Nt", 2))
                 continue;
-            //if (strcmp(symbol->name, "NtCallbackReturn"))
-            //    continue;
 
             PRINT_DEBUG("[SYSCALLS] Adding trap to %s\n", symbol->name);
 
-            drakvuf_trap_t *trap = (drakvuf_trap_t *)g_malloc0(sizeof(drakvuf_trap_t));
+            syscall_wrapper_t* wrapper = (syscall_wrapper_t*)g_malloc(sizeof(syscall_wrapper_t));
+
+            wrapper->syscall_index = -1;
+            wrapper->sc=s;
+
+            for (j=0; j<NUM_SYSCALLS; j++)
+            {
+                if ( !strcmp(symbol->name,win_syscalls[j].name) )
+                {
+                    wrapper->syscall_index=j;
+                    break;
+                }
+            }
+
+            if ( wrapper->syscall_index==-1 )
+                PRINT_DEBUG("[SYSCALLS]: %s not found in argument list\n", symbol->name);
+
+            drakvuf_trap_t* trap = (drakvuf_trap_t*)g_malloc0(sizeof(drakvuf_trap_t));
             trap->breakpoint.lookup_type = LOOKUP_PID;
             trap->breakpoint.pid = 4;
             trap->breakpoint.addr_type = ADDR_VA;
@@ -163,41 +425,51 @@ static GSList* create_trap_config(drakvuf_t drakvuf, syscalls *s, symbols_t *sym
             trap->breakpoint.module = "ntoskrnl.exe";
             trap->name = g_strdup(symbol->name);
             trap->type = BREAKPOINT;
-            trap->cb = cb;
-            trap->data = s;
+            trap->cb = win_cb;
+            trap->data = wrapper;
 
             ret = g_slist_prepend(ret, trap);
         }
-
-        drakvuf_release_vmi(drakvuf);
     }
 
-    if ( s->os == VMI_OS_LINUX ) {
+    if ( s->os == VMI_OS_LINUX )
+    {
         addr_t rva = 0;
 
-        if ( VMI_FAILURE == drakvuf_get_constant_rva(rekall_profile, "_text", &rva) )
-            goto done;
+        if ( !drakvuf_get_constant_rva(drakvuf, "_text", &rva) )
+            return NULL;
 
         addr_t kaslr = drakvuf_get_kernel_base(drakvuf) - rva;
 
-        for (i=0; i < symbols->count; i++) {
-
-            const struct symbol *symbol = &symbols->symbols[i];
+        for (i=0; i < symbols->count; i++)
+        {
+            const struct symbol* symbol = &symbols->symbols[i];
 
             /* Looking for system calls */
-            if (strncmp(symbol->name, "sys_", 4) )
+            if (strncmp(symbol->name, "sys_", 4))
                 continue;
 
             /* This is the address of the table itself so skip it */
-            if (!strcmp(symbol->name, "sys_call_table") )
+            if (!strcmp(symbol->name, "sys_call_table"))
                 continue;
 
-            //if (strcmp(symbol->name, "sys_gettimeofday"))
-            //    continue;
+            /* This is a variable used by gettimeofday not a syscall */
+            if (!strcmp(symbol->name, "sys_tz"))
+                continue;
+
+            /* These are all variables, not syscalls */
+            if (!strncmp(symbol->name, "sys_dmi", 7) )
+                continue;
+
+            if (!strcmp(symbol->name, "sys_tracepoint_refcount"))
+                continue;
+
+            if (!strcmp(symbol->name, "sys_table"))
+                continue;
 
             PRINT_DEBUG("[SYSCALLS] Adding trap to %s at 0x%lx (kaslr 0x%lx)\n", symbol->name, symbol->rva + kaslr, kaslr);
 
-            drakvuf_trap_t *trap = (drakvuf_trap_t *)g_malloc0(sizeof(drakvuf_trap_t));
+            drakvuf_trap_t* trap = (drakvuf_trap_t*)g_malloc0(sizeof(drakvuf_trap_t));
             trap->breakpoint.lookup_type = LOOKUP_PID;
             trap->breakpoint.pid = 0;
             trap->breakpoint.addr_type = ADDR_VA;
@@ -205,35 +477,125 @@ static GSList* create_trap_config(drakvuf_t drakvuf, syscalls *s, symbols_t *sym
             trap->breakpoint.module = "linux";
             trap->name = g_strdup(symbol->name);
             trap->type = BREAKPOINT;
-            trap->cb = cb;
+            trap->cb = linux_cb;
             trap->data = s;
 
             ret = g_slist_prepend(ret, trap);
         }
     }
 
-done:
     return ret;
 }
 
-syscalls::syscalls(drakvuf_t drakvuf, const void *config, output_format_t output) {
-    const char *rekall_profile = (const char *)config;
-    symbols_t *symbols = drakvuf_get_symbols_from_rekall(rekall_profile);
+static GHashTable* read_syscalls_filter(const char* filter_file)
+{
+    GHashTable* table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    if (!table) return NULL;
+
+    FILE* f = fopen(filter_file, "r");
+    if (!f)
+    {
+        g_hash_table_destroy(table);
+        return NULL;
+    }
+    ssize_t read;
+    do
+    {
+        char* line = NULL;
+        size_t len = 0;
+        read = getline(&line, &len, f);
+        while (read > 0 && (line[read - 1] == '\n' || line[read - 1] == '\r')) read--;
+        if (read > 0)
+        {
+            line[read] = '\0';
+            g_hash_table_insert(table, line, NULL);
+        }
+        else
+            free(line);
+    }
+    while (read != -1);
+
+    fclose(f);
+    return table;
+}
+
+static symbols_t* filter_symbols(const symbols_t* symbols, const char* filter_file)
+{
+    GHashTable* filter = read_syscalls_filter(filter_file);
+    if (!filter) return NULL;
+    symbols_t* ret = (symbols_t*)g_malloc0(sizeof(symbols_t));
+    if (!ret)
+    {
+        g_hash_table_destroy(filter);
+        return NULL;
+    }
+
+    ret->count = symbols->count;
+    ret->symbols = (symbol_t*)g_malloc0(sizeof(symbol_t) * ret->count);
+    if (!ret->symbols)
+    {
+        g_hash_table_destroy(filter);
+        g_free(ret);
+        return NULL;
+    }
+
+    size_t filtered_size = 0;
+    for (size_t i = 0; i < symbols->count; ++i)
+    {
+        if (g_hash_table_contains(filter, symbols->symbols[i].name))
+        {
+            ret->symbols[filtered_size] = symbols->symbols[i];
+            ret->symbols[filtered_size].name = g_strdup(symbols->symbols[i].name);
+            filtered_size++;
+        }
+    }
+    ret->count = filtered_size;
+    g_hash_table_destroy(filter);
+    return ret;
+}
+
+syscalls::syscalls(drakvuf_t drakvuf, const void* config, output_format_t output)
+{
+    const struct syscalls_config* c = (const struct syscalls_config*)config;
+    symbols_t* symbols = drakvuf_get_symbols_from_rekall(drakvuf);
     if (!symbols)
     {
-        fprintf(stderr, "Failed to parse Rekall profile at %s\n", rekall_profile);
+        fprintf(stderr, "Failed to get symbols from Rekall profile\n");
         throw -1;
     }
 
+    if (c->syscalls_filter_file)
+    {
+        symbols_t* filtered_symbols = filter_symbols(symbols, c->syscalls_filter_file);
+        drakvuf_free_symbols(symbols);
+        if (!filtered_symbols)
+        {
+            fprintf(stderr, "Failed to apply syscalls filter %s\n", c->syscalls_filter_file);
+            throw -1;
+        }
+        symbols = filtered_symbols;
+    }
+
     this->os = drakvuf_get_os_type(drakvuf);
-    this->traps = create_trap_config(drakvuf, this, symbols, rekall_profile);
+    this->traps = create_trap_config(drakvuf, this, symbols);
     this->format = output;
+
+    if ( !this->traps )
+    {
+        drakvuf_free_symbols(symbols);
+        throw -1;
+    }
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    this->reg_size = vmi_get_address_width(vmi); // 4 or 8 (bytes)
+    drakvuf_release_vmi(drakvuf);
 
     drakvuf_free_symbols(symbols);
 
-    GSList *loop = this->traps;
-    while(loop) {
-        drakvuf_trap_t *trap = (drakvuf_trap_t *)loop->data;
+    GSList* loop = this->traps;
+    while (loop)
+    {
+        drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
 
         if ( !drakvuf_add_trap(drakvuf, trap) )
             throw -1;
@@ -242,11 +604,17 @@ syscalls::syscalls(drakvuf_t drakvuf, const void *config, output_format_t output
     }
 }
 
-syscalls::~syscalls() {
-    GSList *loop = this->traps;
-    while(loop) {
-        drakvuf_trap_t *trap = (drakvuf_trap_t *)loop->data;
+syscalls::~syscalls()
+{
+    GSList* loop = this->traps;
+    while (loop)
+    {
+        drakvuf_trap_t* trap = (drakvuf_trap_t*)loop->data;
         g_free((char*)trap->name);
+        if (trap->data != (void*)this)
+        {
+            g_free(trap->data);
+        }
         g_free(loop->data);
         loop = loop->next;
     }

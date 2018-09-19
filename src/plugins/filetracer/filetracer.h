@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,20 +105,34 @@
 #ifndef FILETRACER_H
 #define FILETRACER_H
 
+#include "plugins/private.h"
 #include "plugins/plugins.h"
 
-class filetracer: public plugin {
-    public:
-        page_mode_t pm;
-        output_format_t format;
-        drakvuf_trap_t poolalloc;
-        GSList *writetraps;
-        GHashTable *rettraps;
-        addr_t file_object_size, file_name_offset,
-              string_buffer_offset, string_length_offset;
+class filetracer: public plugin
+{
+public:
+    output_format_t format;
 
-        filetracer(drakvuf_t drakvuf, const void *config, output_format_t output);
-        ~filetracer();
+    addr_t objattr_name;
+    addr_t objattr_root;
+    addr_t newfile_name_offset;
+    addr_t newfile_name_length_offset;
+    addr_t newfile_root_offset;
+
+    drakvuf_trap_t trap[10] =
+    {
+        [0 ... 9] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
+        }
+    };
+
+    filetracer(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~filetracer();
 };
 
 #endif

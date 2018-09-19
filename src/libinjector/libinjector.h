@@ -113,10 +113,79 @@ extern "C" {
 
 #include <libdrakvuf/libdrakvuf.h>
 
+typedef enum
+{
+    INJECT_METHOD_CREATEPROC,
+    INJECT_METHOD_SHELLEXEC,
+    INJECT_METHOD_SHELLCODE,
+    INJECT_METHOD_DOPP,
+    __INJECT_METHOD_MAX
+}
+injection_method_t;
+
+typedef enum
+{
+    ARGUMENT_STRING,
+    ARGUMENT_STRUCT,
+    ARGUMENT_INT,
+    __ARGUMENT_MAX
+} argument_type_t;
+
+typedef enum
+{
+    STATUS_NULL,
+    STATUS_ALLOC_OK,
+    STATUS_PHYS_ALLOC_OK,
+    STATUS_WRITE_OK,
+    STATUS_EXEC_OK,
+    STATUS_BP_HIT,
+    __STATUS_MAX
+} status_type_t;
+
+struct argument
+{
+    uint32_t type;
+    uint32_t size;
+    uint64_t data_on_stack;
+    void* data;
+};
+
+static inline
+void init_argument(
+    struct argument* arg,
+    argument_type_t type,
+    size_t size,
+    void* data)
+{
+    arg->type = type;
+    arg->size = size;
+
+    arg->data = data;
+
+    arg->data_on_stack = 0;
+}
+
+bool setup_stack_32(vmi_instance_t vmi,
+                    drakvuf_trap_info_t* info,
+                    access_context_t* ctx,
+                    struct argument args[],
+                    int nb_args);
+
+bool setup_stack_64(vmi_instance_t vmi,
+                    drakvuf_trap_info_t* info,
+                    access_context_t* ctx,
+                    struct argument args[],
+                    int nb_args);
+
 int injector_start_app(drakvuf_t drakvuf,
                        vmi_pid_t pid,
                        uint32_t tid, // optional, if tid=0 the first thread that gets scheduled is used
-                       const char *app);
+                       const char* app,
+                       const char* cwd,
+                       injection_method_t method,
+                       output_format_t format,
+                       const char* binary_path,     // if -m = doppelganging
+                       const char* target_process); // if -m = doppelganging
 
 #pragma GCC visibility pop
 

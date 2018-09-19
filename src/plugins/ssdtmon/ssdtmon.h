@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,20 +105,22 @@
 #ifndef SSDTMON_H
 #define SSDTMON_H
 
+#include "plugins/private.h"
 #include "plugins/plugins.h"
 
-class ssdtmon: public plugin {
-    public:
-        output_format_t format;
-        drakvuf_trap_t ssdtwrite;
-        drakvuf_trap_t ssdtwrite2;
+class ssdtmon: public plugin
+{
+public:
+    output_format_t format;
+    drakvuf_trap_t ssdtwrite;
+    drakvuf_trap_t ssdtwrite2;
 
-        size_t ulongs;
-        addr_t kiservicetable;
-        uint32_t kiservicelimit;
+    size_t ulongs;
+    addr_t kiservicetable;
+    uint32_t kiservicelimit;
 
-        ssdtmon(drakvuf_t drakvuf, const void *config, output_format_t output);
-        ~ssdtmon();
+    ssdtmon(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~ssdtmon();
 };
 
 #endif

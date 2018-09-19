@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -111,48 +111,17 @@ extern "C" {
 
 #pragma GCC visibility push(default)
 
+#include <glib.h>
 #include <libvmi/libvmi.h>
 #include <libvmi/events.h>
-
-/*---------------------------------------------------------
- * Reading in Rekall profile informations
- */
-
-typedef struct symbol {
-    const char *name;
-    addr_t rva;
-    uint8_t type;
-    int inputs;
-} __attribute__ ((packed)) symbol_t;
-
-typedef struct symbols {
-    const char *name;
-    symbol_t *symbols; // array of size count
-    uint64_t count;
-} symbols_t;
-
-symbols_t* drakvuf_get_symbols_from_rekall(const char *profile);
-void drakvuf_free_symbols(symbols_t *symbols);
-
-status_t drakvuf_get_function_rva(const char *rekall_profile,
-                                  const char *function,
-                                  addr_t *rva);
-status_t drakvuf_get_constant_rva(const char *rekall_profile,
-                                  const char *constant,
-                                  addr_t *rva);
-status_t drakvuf_get_struct_size(const char *rekall_profile,
-                                 const char *struct_name,
-                                 size_t *size);
-status_t drakvuf_get_struct_member_rva(const char *rekall_profile,
-                                       const char *struct_name,
-                                       const char *symbol,
-                                       addr_t *rva);
+#include <json-c/json.h>
 
 /*---------------------------------------------------------
  * DRAKVUF functions
  */
 
-typedef enum lookup_type {
+typedef enum lookup_type
+{
     __INVALID_LOOKUP_TYPE,
     LOOKUP_NONE,
     LOOKUP_DTB,
@@ -160,14 +129,16 @@ typedef enum lookup_type {
     LOOKUP_NAME,
 } lookup_type_t;
 
-typedef enum addr_type {
+typedef enum addr_type
+{
     __INVALID_ADDR_TYPE,
     ADDR_RVA,
     ADDR_VA,
     ADDR_PA
 } addr_type_t;
 
-typedef enum trap_type {
+typedef enum trap_type
+{
     __INVALID_TRAP_TYPE,
     BREAKPOINT,
     MEMACCESS,
@@ -176,58 +147,76 @@ typedef enum trap_type {
     CPUID
 } trap_type_t;
 
-typedef enum memaccess_type {
+typedef enum memaccess_type
+{
     __INVALID_MEMACCESS_TYPE,
     PRE,
     POST
 } memaccess_type_t;
 
+typedef struct process_data
+{
+    const char* name;   /* Process name */
+    vmi_pid_t pid ;     /* Process pid */
+    vmi_pid_t ppid ;    /* Process parent pid */
+    addr_t base_addr ;  /* Process base address */
+    int64_t userid ;    /* Process SessionID/UID */
+} proc_data_t ;
+
 typedef struct drakvuf* drakvuf_t;
 struct drakvuf_trap;
 typedef struct drakvuf_trap drakvuf_trap_t;
 
-typedef struct drakvuf_trap_info {
+typedef struct drakvuf_trap_info
+{
+    GTimeVal timestamp;
     unsigned int vcpu;
     uint16_t altp2m_idx;
-    const char* procname; /* Currently executing process' name */
-    int64_t sessionid; /* Currently executing process' SessionID */
+    proc_data_t proc_data ; /* Current executing process data */
     addr_t trap_pa;
-    x86_registers_t *regs;
-    drakvuf_trap_t *trap;
-    union {
-        const cpuid_event_t *cpuid; /* For CPUID traps */
-        const debug_event_t *debug; /* For DEBUG traps */
+    x86_registers_t* regs;
+    drakvuf_trap_t* trap;
+    union
+    {
+        const cpuid_event_t* cpuid; /* For CPUID traps */
+        const debug_event_t* debug; /* For DEBUG traps */
     };
 } drakvuf_trap_info_t;
 
-struct drakvuf_trap {
+struct drakvuf_trap
+{
     trap_type_t type;
     event_response_t (*cb)(drakvuf_t, drakvuf_trap_info_t*);
-    void *data;
-    const char *name; // Only used for informational/debugging purposes
+    void* data;
+    const char* name; // Only used for informational/debugging purposes
 
-    union {
-        struct {
+    union
+    {
+        struct
+        {
             lookup_type_t lookup_type;
-            union {
+            union
+            {
                 vmi_pid_t pid;
-                const char *proc;
+                const char* proc;
                 addr_t dtb;
             };
 
             /* If specified and RVA is used
                RVA will be calculated from the base
                of this module */
-            const char *module;
+            const char* module;
 
             addr_type_t addr_type;
-            union {
+            union
+            {
                 addr_t rva;
                 addr_t addr;
             };
         } breakpoint;
 
-        struct {
+        struct
+        {
             addr_t gfn;
             vmi_mem_access_t access;
             memaccess_type_t type;
@@ -244,31 +233,103 @@ struct drakvuf_trap {
 // libdrakvuf-windows.h or something similar
 
 // For get_previous_mode...
-typedef enum privilege_mode {
+typedef enum privilege_mode
+{
     KERNEL_MODE,
     USER_MODE,
     MAXIMUM_MODE
 } privilege_mode_t ;
 
 // Confirmed only on Win7 SP1...
-typedef enum object_manager_object {
+typedef enum object_manager_object
+{
     OBJ_MANAGER_PROCESS_OBJECT = 7,
     OBJ_MANAGER_THREAD_OBJECT  = 8
 } object_manager_object_t ;
 
 ////////////////////////////////////////////////////////////////////////////
 
-typedef void (*drakvuf_trap_free_t)(drakvuf_trap_t *trap);
+/*---------------------------------------------------------
+ * Reading in Rekall profile informations
+ */
 
-bool drakvuf_init (drakvuf_t *drakvuf,
-                   const char *domain,
-                   const char *rekall_profile,
+typedef struct symbol
+{
+    const char* name;
+    addr_t rva;
+    uint8_t type;
+    int inputs;
+} __attribute__ ((packed)) symbol_t;
+
+typedef struct symbols
+{
+    const char* name;
+    symbol_t* symbols; // array of size count
+    uint64_t count;
+} symbols_t;
+
+symbols_t* rekall_get_symbols_from_rekall(json_object* rekall_profile_json);
+symbols_t* drakvuf_get_symbols_from_rekall(drakvuf_t drakvuf);
+void drakvuf_free_symbols(symbols_t* symbols);
+
+bool drakvuf_get_function_rva(drakvuf_t drakvuf,
+                              const char* function,
+                              addr_t* rva);
+bool rekall_get_function_rva(json_object* rekall_profile_json,
+                             const char* function,
+                             addr_t* rva);
+
+bool drakvuf_get_constant_rva(drakvuf_t drakvuf,
+                              const char* constant,
+                              addr_t* rva);
+bool rekall_get_constant_rva( json_object* rekall_profile_json,
+                              const char* constant,
+                              addr_t* rva);
+
+bool drakvuf_get_struct_size(drakvuf_t drakvuf,
+                             const char* struct_name,
+                             size_t* size);
+bool rekall_get_struct_size( json_object* rekall_profile_json,
+                             const char* struct_name,
+                             size_t* size);
+
+bool drakvuf_get_struct_member_rva(drakvuf_t drakvuf,
+                                   const char* struct_name,
+                                   const char* symbol,
+                                   addr_t* rva);
+bool rekall_get_struct_member_rva( json_object* rekall_profile_json,
+                                   const char* struct_name,
+                                   const char* symbol,
+                                   addr_t* rva);
+
+bool drakvuf_get_struct_members_array_rva(
+    drakvuf_t drakvuf,
+    const char* struct_name_subsymbol_array[][2],
+    addr_t array_size,
+    addr_t* rva);
+bool rekall_get_struct_members_array_rva(
+    json_object* rekall_profile_json,
+    const char* struct_name_subsymbol_array[][2],
+    addr_t array_size,
+    addr_t* rva);
+
+int drakvuf_get_os_build_date(drakvuf_t drakvuf);
+
+//---- end of paired drakvuf_* and rekall_* functions ----
+
+typedef void (*drakvuf_trap_free_t)(drakvuf_trap_t* trap);
+
+typedef void (*event_cb_t) (int fd, void* data);
+
+bool drakvuf_init (drakvuf_t* drakvuf,
+                   const char* domain,
+                   const char* rekall_profile,
                    const bool verbose);
 void drakvuf_close (drakvuf_t drakvuf, const bool pause);
 bool drakvuf_add_trap(drakvuf_t drakvuf,
-                      drakvuf_trap_t *trap);
+                      drakvuf_trap_t* trap);
 void drakvuf_remove_trap (drakvuf_t drakvuf,
-                          drakvuf_trap_t *trap,
+                          drakvuf_trap_t* trap,
                           drakvuf_trap_free_t free_routine);
 void drakvuf_loop (drakvuf_t drakvuf);
 void drakvuf_interrupt (drakvuf_t drakvuf,
@@ -284,7 +345,10 @@ addr_t drakvuf_get_obj_by_handle(drakvuf_t drakvuf,
                                  uint64_t handle);
 
 os_t drakvuf_get_os_type(drakvuf_t drakvuf);
-const char *drakvuf_get_rekall_profile(drakvuf_t drakvuf);
+page_mode_t drakvuf_get_page_mode(drakvuf_t drakvuf);
+int drakvuf_get_address_width(drakvuf_t drakvuf);
+const char* drakvuf_get_rekall_profile(drakvuf_t drakvuf);
+json_object* drakvuf_get_rekall_profile_json(drakvuf_t drakvuf);
 
 addr_t drakvuf_get_kernel_base(drakvuf_t drakvuf);
 
@@ -296,64 +360,141 @@ addr_t drakvuf_get_kernel_base(drakvuf_t drakvuf);
 addr_t drakvuf_get_current_process(drakvuf_t drakvuf,
                                    uint64_t vcpu_id);
 addr_t drakvuf_get_current_thread(drakvuf_t drakvuf,
-                                   uint64_t vcpu_id);
+                                  uint64_t vcpu_id);
 
 /* Caller must free the returned string */
-char *drakvuf_get_process_name(drakvuf_t drakvuf,
-                               addr_t eprocess_base);
+char* drakvuf_get_process_name(drakvuf_t drakvuf,
+                               addr_t process_base);
 
-bool drakvuf_get_process_pid(drakvuf_t drakvuf, addr_t eprocess_base, vmi_pid_t *pid);
+status_t drakvuf_get_process_pid( drakvuf_t drakvuf,
+                                  addr_t process_base,
+                                  vmi_pid_t* pid);
 
-/* Process SessionID or -1 on error */
-int64_t drakvuf_get_process_sessionid(drakvuf_t drakvuf,
-                                      addr_t eprocess_base);
+/* Process userid or -1 on error */
+int64_t drakvuf_get_process_userid(drakvuf_t drakvuf,
+                                   addr_t process_base);
 
 bool drakvuf_get_current_thread_id(drakvuf_t drakvuf,
-                                    uint64_t vcpu_id,
-                                    uint32_t *thread_id);
+                                   uint64_t vcpu_id,
+                                   uint32_t* thread_id);
 
-addr_t drakvuf_exportsym_to_va(drakvuf_t drakvuf, addr_t eprocess_addr,
-                               const char *module, const char *sym);
+addr_t drakvuf_exportksym_to_va(drakvuf_t drakvuf,
+                                const vmi_pid_t pid, const char* proc_name,
+                                const char* mod_name, addr_t rva);
+
+addr_t drakvuf_exportsym_to_va(drakvuf_t drakvuf, addr_t process_addr,
+                               const char* module, const char* sym);
 
 // Microsoft PreviousMode KTHREAD explanation:
 // https://msdn.microsoft.com/en-us/library/windows/hardware/ff559860(v=vs.85).aspx
 bool drakvuf_get_current_thread_previous_mode(drakvuf_t drakvuf,
-                                              uint64_t vcpu_id,
-                                              privilege_mode_t *previous_mode);
+        uint64_t vcpu_id,
+        privilege_mode_t* previous_mode);
 
 bool drakvuf_get_thread_previous_mode(drakvuf_t drakvuf,
                                       addr_t kthread,
-                                      privilege_mode_t *previous_mode);
+                                      privilege_mode_t* previous_mode);
 
-bool drakvuf_is_ethread(drakvuf_t drakvuf,
+bool drakvuf_is_thread(drakvuf_t drakvuf,
+                       addr_t dtb,
+                       addr_t thread_addr);
+
+bool drakvuf_is_process(drakvuf_t drakvuf,
                         addr_t dtb,
-                        addr_t ethread_addr);
+                        addr_t process_addr);
 
-bool drakvuf_is_eprocess(drakvuf_t drakvuf,
-                         addr_t dtb,
-                         addr_t eprocess_addr);
-
-bool drakvuf_find_eprocess(drakvuf_t drakvuf,
-                           vmi_pid_t find_pid,
-                           const char *find_procname,
-                           addr_t *eprocess_addr);
+bool drakvuf_find_process(drakvuf_t drakvuf,
+                          vmi_pid_t find_pid,
+                          const char* find_procname,
+                          addr_t* process_addr);
 
 bool drakvuf_get_module_list(drakvuf_t drakvuf,
-                             addr_t eprocess_base,
-                             addr_t *module_list);
+                             addr_t process_base,
+                             addr_t* module_list);
 
 // ObReferenceObjectByHandle
 bool drakvuf_obj_ref_by_handle(drakvuf_t drakvuf,
-                               drakvuf_trap_info_t *info,
-                               addr_t current_eprocess,
+                               drakvuf_trap_info_t* info,
+                               addr_t current_process,
                                addr_t handle,
                                object_manager_object_t obj_type_arg,
-                               addr_t *obj_body_addr);
+                               addr_t* obj_body_addr);
+
+unicode_string_t* drakvuf_read_unicode(drakvuf_t drakvuf, drakvuf_trap_info_t* info, addr_t addr);
+
+unicode_string_t* drakvuf_read_unicode_va(vmi_instance_t vmi, addr_t vaddr, vmi_pid_t pid);
 
 bool drakvuf_get_module_base_addr( drakvuf_t drakvuf,
                                    addr_t module_list_head,
-                                   const char *module_name,
-                                   addr_t *base_addr );
+                                   const char* module_name,
+                                   addr_t* base_addr );
+
+status_t drakvuf_get_process_ppid( drakvuf_t drakvuf,
+                                   addr_t process_base,
+                                   vmi_pid_t* ppid );
+
+bool drakvuf_get_current_process_data( drakvuf_t drakvuf,
+                                       uint64_t vcpu_id,
+                                       proc_data_t* proc_data );
+
+gchar* drakvuf_reg_keyhandle_path(drakvuf_t drakvuf,
+                                  drakvuf_trap_info_t* info,
+                                  addr_t key_handle,
+                                  addr_t process_arg);
+
+char* drakvuf_get_filename_from_handle( drakvuf_t drakvuf,
+                                        drakvuf_trap_info_t* info,
+                                        addr_t handle );
+
+// Reads 'length' characters from array of UTF_16 charachters into unicode_string_t object with UTF_8 encoding
+unicode_string_t* drakvuf_read_wchar_array(vmi_instance_t vmi, const access_context_t* ctx, size_t length);
+
+
+// Determines length of null-terminated array of UTF_16 charachters
+size_t drakvuf_wchar_string_length(vmi_instance_t vmi, const access_context_t* ctx);
+
+// Reads null-terminated string of UTF_16 charachters, automatically determining length, into unicode_string_t object with UTF_8 encoding
+unicode_string_t* drakvuf_read_wchar_string(vmi_instance_t vmi, const access_context_t* ctx);
+
+addr_t drakvuf_get_function_argument(drakvuf_t drakvuf,
+                                     drakvuf_trap_info_t* info,
+                                     int argument_number);
+
+/*---------------------------------------------------------
+ * Event FD functions
+ */
+
+int drakvuf_event_fd_add(drakvuf_t drakvuf,
+                         int fd,
+                         event_cb_t event_cb,
+                         void* data);
+
+int drakvuf_event_fd_remove(drakvuf_t drakvuf,
+                            int fd);
+
+/*---------------------------------------------------------
+ * Output helpers
+ */
+
+typedef enum
+{
+    OUTPUT_DEFAULT,
+    OUTPUT_CSV,
+    OUTPUT_KV,
+    __OUTPUT_MAX
+} output_format_t;
+
+// Printf helpers for timestamp.
+#define FORMAT_TIMEVAL "%" PRId64 ".%06" PRId64
+#define UNPACK_TIMEVAL(t) (t).tv_sec, (t).tv_usec
+
+#define eprint_current_time(...) \
+    do { \
+        GTimeVal current_time; \
+        g_get_current_time (&current_time); \
+        fprintf(stderr, FORMAT_TIMEVAL " ", UNPACK_TIMEVAL(current_time)); \
+    } while (0)
+
 #pragma GCC visibility pop
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -62,7 +62,7 @@
  * be included as well.  This license is incompatible with some other open *
  * source licenses as well.  In some cases we can relicense portions of    *
  * DRAKVUF or grant special permissions to use it in other open source     *
- * software.  Please contact tamas.k.lengyel@gmail.com with any such       *
+ * software.  Please contact tamas@tklengyel.com with any such             *
  * requests.  Similarly, we don't incorporate incompatible open source     *
  * software into Covered Software without special permission from the      *
  * copyright holders.                                                      *
@@ -102,208 +102,174 @@
  *                                                                         *
  ***************************************************************************/
 
-#define _GNU_SOURCE
+/*
+ * Take files from <in folder> and place them into folders under <queue folder>.
+ * Folders in <queue folder> need to be in a format <queue_name>_<queue_capacity>,
+ * such as "testqueue_10". This will result in the distributor placing 10 files
+ * into that folder before looking at the next queue (if any).
+ */
+
 #include <stdio.h>
-#include <ctype.h>
+#include <stdlib.h>
+#include <inttypes.h>
+#include <stdbool.h>
 #include <string.h>
-
-#include <libvmi/libvmi.h>
-#include <json-c/json.h>
+#include <unistd.h>
 #include <glib.h>
+#include <dirent.h>
+#include <errno.h>
+#include <sys/inotify.h>
+#include <time.h>
+#include <poll.h>
 
-#include "libdrakvuf.h"
-#include "private.h"
+static const char* in_folder;
+static const char* queue_folder;
 
-status_t rekall_lookup(
-        const char *rekall_profile,
-        const char *symbol,
-        const char *subsymbol,
-        addr_t *rva,
-        addr_t *size)
+int main(int argc, char** argv)
 {
-    status_t ret = VMI_FAILURE;
-    if(!rekall_profile || !symbol) {
-        return ret;
+    DIR* indir, *qdir;
+    struct dirent* inent, *qdent;
+    uint64_t processed = 0, total_processed = 0, jobs = 0;
+    int ret = 0;
+    uint64_t limit = 0;
+
+    if (argc < 3)
+    {
+        printf("Not enough arguments: %i!\n", argc);
+        printf("%s <in folder> <queue folder> <optional limit>\n", argv[0]);
+        return 1;
     }
 
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile '%s' couldn't be opened!\n", rekall_profile);
-        return ret;
+    in_folder = argv[1];
+    queue_folder = argv[2];
+
+    if ( argc == 4 )
+        limit = strtoull(argv[3], 0, 10);
+
+    int fd = inotify_init();
+    int wd = inotify_add_watch(fd, in_folder, IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+    char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
+
+    struct pollfd pollfd =
+    {
+        .fd = fd,
+        .events = POLLIN
+    };
+
+    do
+    {
+        jobs = 0;
+        processed = 0;
+
+        if ((indir = opendir (in_folder)) != NULL)
+        {
+            while ((inent = readdir (indir)) != NULL)
+            {
+                if (!strcmp(inent->d_name, ".") || !strcmp(inent->d_name, ".."))
+                    continue;
+
+                jobs++;
+
+                if ((qdir = opendir (queue_folder)) != NULL)
+                {
+                    while ((qdent = readdir (qdir)) != NULL)
+                    {
+                        if (!strcmp(qdent->d_name, ".") || !strcmp(qdent->d_name, ".."))
+                            continue;
+
+                        if ( !g_strrstr(qdent->d_name, "_") )
+                            continue;
+
+                        gchar** qinfo = g_strsplit(qdent->d_name, "_", 2);
+                        int qsize = atoi(qinfo[1]), count = -1;
+                        DIR* q;
+                        struct dirent* qent;
+
+                        char* folder = g_malloc0(snprintf(NULL, 0, "%s/%s", queue_folder, qdent->d_name) + 1);
+                        sprintf(folder, "%s/%s", queue_folder, qdent->d_name);
+
+                        if ((q = opendir (folder)) != NULL)
+                        {
+                            count = 0;
+                            while ((qent = readdir (q)) != NULL)
+                                if ( strcmp(qent->d_name, ".") && strcmp(qent->d_name, "..") )
+                                    count++;
+                            closedir (q);
+                        }
+
+                        g_free(folder);
+
+                        if ( count >= 0 && qsize >= 0 && qsize > count )
+                        {
+                            char* command = g_malloc0(snprintf(NULL, 0, "mv %s/%s %s/%s/%s", in_folder, inent->d_name, queue_folder, qdent->d_name, inent->d_name) + 1);
+                            sprintf(command, "mv %s/%s %s/%s/%s", in_folder, inent->d_name, queue_folder, qdent->d_name, inent->d_name);
+                            printf("** MOVING FILE FOR PROCESSING: %s\n", command);
+                            g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
+                            g_free(command);
+
+                            g_strfreev(qinfo);
+                            processed++;
+                            break;
+                        }
+
+                        g_strfreev(qinfo);
+                    }
+
+                    closedir(qdir);
+                }
+            }
+            closedir (indir);
+        }
+        else
+        {
+            printf("Failed to open target folder!\n");
+            ret = 1;
+            break;
+        }
+
+        if ( processed )
+        {
+            total_processed += processed;
+            printf("Distributed %lu samples (total %lu)\n", processed, total_processed);
+
+            if ( limit != 0 && total_processed >= limit )
+                break;
+        }
+
+        if ( !jobs )
+        {
+            printf("In folder is empty, waiting for file creation\n");
+
+            do
+            {
+                int rv = poll (&pollfd, 1, 1000);
+                if ( rv < 0 )
+                {
+                    printf("Error polling\n");
+                    ret = 1;
+                    break;
+                }
+                if ( rv > 0 && pollfd.revents & POLLIN )
+                {
+                    if ( read( fd, buffer, sizeof(struct inotify_event) + NAME_MAX + 1 ) < 0 )
+                    {
+                        printf("Error reading inotify event\n");
+                        ret = 1;
+                    }
+                    break;
+                }
+            }
+            while (!ret);
+        }
+        else if ( processed != jobs )
+            sleep(1);
+
     }
+    while (!ret);
 
-    if(!subsymbol && !size) {
-        json_object *constants = NULL, *jsymbol = NULL;
-        if (!json_object_object_get_ex(root, "$CONSTANTS", &constants)) {
-            PRINT_DEBUG("Rekall profile: no $CONSTANTS section found\n");
-            goto exit;
-        }
+    inotify_rm_watch( fd, wd );
+    close(fd);
 
-        if (!json_object_object_get_ex(constants, symbol, &jsymbol)){
-            PRINT_DEBUG("Rekall profile: symbol '%s' not found\n", symbol);
-            goto exit;
-        }
-
-        *rva = json_object_get_int64(jsymbol);
-
-        ret = VMI_SUCCESS;
-    } else {
-        json_object *structs = NULL, *jstruct = NULL, *jstruct2 = NULL, *jmember = NULL, *jvalue = NULL;
-        if (!json_object_object_get_ex(root, "$STRUCTS", &structs)) {
-            PRINT_DEBUG("Rekall profile: no $STRUCTS section found\n");
-            goto exit;
-        }
-        if (!json_object_object_get_ex(structs, symbol, &jstruct)) {
-            PRINT_DEBUG("Rekall profile: no '%s' found\n", symbol);
-            goto exit;
-        }
-
-        if (size) {
-            json_object *jsize = json_object_array_get_idx(jstruct, 0);
-            *size = json_object_get_int64(jsize);
-
-            ret = VMI_SUCCESS;
-            goto exit;
-        }
-
-        jstruct2 = json_object_array_get_idx(jstruct, 1);
-        if (!jstruct2) {
-            PRINT_DEBUG("Rekall profile: struct '%s' has no second element\n", symbol);
-            goto exit;
-        }
-
-        if (!json_object_object_get_ex(jstruct2, subsymbol, &jmember)) {
-            PRINT_DEBUG("Rekall profile: '%s' has no '%s' member\n", symbol, subsymbol);
-            goto exit;
-        }
-
-        jvalue = json_object_array_get_idx(jmember, 0);
-        if (!jvalue) {
-            PRINT_DEBUG("Rekall profile: '%s'.'%s' has no RVA defined\n", symbol, subsymbol);
-            goto exit;
-        }
-
-        *rva = json_object_get_int64(jvalue);
-
-        ret = VMI_SUCCESS;
-    }
-
-exit:
-    json_object_put(root);
+    printf("Finished processing %lu samples\n", total_processed);
     return ret;
-}
-
-symbols_t* drakvuf_get_symbols_from_rekall(const char *rekall_profile)
-{
-
-    symbols_t *ret = g_malloc0(sizeof(symbols_t));;
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
-        goto err_exit;
-    }
-
-    json_object *functions = NULL;
-    if (!json_object_object_get_ex(root, "$FUNCTIONS", &functions)) {
-        PRINT_DEBUG("Rekall profile: no $FUNCTIONS section found\n");
-        goto err_exit;
-    }
-
-    ret->count = json_object_object_length(functions);
-    ret->symbols = g_malloc0(sizeof(symbols_t) * ret->count);
-
-    struct json_object_iterator it = json_object_iter_begin(functions);
-    struct json_object_iterator itEnd = json_object_iter_end(functions);
-    uint32_t i=0;
-
-    while (!json_object_iter_equal(&it, &itEnd) && i < ret->count) {
-        ret->symbols[i].name = g_strdup(json_object_iter_peek_name(&it));
-        ret->symbols[i].rva = json_object_get_int64(json_object_iter_peek_value(&it));
-        i++;
-        json_object_iter_next(&it);
-    }
-
-    json_object_put(root);
-
-    return ret;
-
-err_exit:
-    if ( root )
-        json_object_put(root);
-
-    free(ret);
-    return NULL;
-}
-
-status_t drakvuf_get_function_rva(const char *rekall_profile, const char *function, addr_t *rva)
-{
-
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
-        goto err_exit;
-    }
-
-    json_object *functions = NULL, *jsymbol = NULL;
-    if (!json_object_object_get_ex(root, "$FUNCTIONS", &functions)) {
-        PRINT_DEBUG("Rekall profile: no $FUNCTIONS section found\n");
-        goto err_exit;
-    }
-
-    if (!json_object_object_get_ex(functions, function, &jsymbol)) {
-        PRINT_DEBUG("Rekall profile: no '%s' found\n", function);
-        goto err_exit;
-    }
-
-    *rva = json_object_get_int64(jsymbol);
-    json_object_put(root);
-    return VMI_SUCCESS;
-
-err_exit:
-    if ( root )
-        json_object_put(root);
-
-    return VMI_FAILURE;
-}
-
-status_t drakvuf_get_constant_rva(const char *rekall_profile, const char *constant, addr_t *rva)
-{
-
-    json_object *root = json_object_from_file(rekall_profile);
-    if(!root) {
-        fprintf(stderr, "Rekall profile couldn't be opened!\n");
-        goto err_exit;
-    }
-
-    json_object *constants = NULL, *jsymbol = NULL;
-    if (!json_object_object_get_ex(root, "$CONSTANTS", &constants)) {
-        PRINT_DEBUG("Rekall profile: no $CONSTANTS section found\n");
-        goto err_exit;
-    }
-
-    if (!json_object_object_get_ex(constants, constant, &jsymbol)) {
-        PRINT_DEBUG("Rekall profile: no '%s' found\n", constant);
-        goto err_exit;
-    }
-
-    *rva = json_object_get_int64(jsymbol);
-    json_object_put(root);
-    return VMI_SUCCESS;
-
-err_exit:
-    if ( root )
-        json_object_put(root);
-
-    return VMI_FAILURE;
-}
-
-void drakvuf_free_symbols(symbols_t *symbols) {
-    uint32_t i;
-    if (!symbols) return;
-
-    for (i=0; i < symbols->count; i++) {
-        free((char*)symbols->symbols[i].name);
-    }
-    free(symbols->symbols);
-    free(symbols);
 }

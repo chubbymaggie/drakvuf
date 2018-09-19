@@ -122,45 +122,61 @@
 // This is defined in libdrakvuf
 extern bool verbose;
 
+#define UNUSED(x) (void)(x)
 #define PRINT_DEBUG(...) \
     do { \
-        if(verbose) fprintf (stderr, __VA_ARGS__); \
+        if(verbose) { eprint_current_time(); fprintf (stderr, __VA_ARGS__); } \
     } while (0)
 
 #else
-#define PRINT_DEBUG(...) \
-    do {} while(0)
+#define PRINT_DEBUG(...)
+#define UNUSED(...)
 #endif
 
-class drakvuf_c {
-    private:
-        bool leave_paused;
-        drakvuf_t drakvuf;
-        drakvuf_plugins* plugins;
-        GThread *timeout_thread = NULL;
-        const char *rekall_profile;
-        os_t os;
+class drakvuf_c
+{
+private:
+    bool leave_paused;
+    drakvuf_t drakvuf;
+    drakvuf_plugins* plugins;
+    GThread* timeout_thread = NULL;
+    GThread* timeout_thread2 = NULL;
+    os_t os;
 
-    public:
-        int timeout;
-        int interrupted;
-        GMutex loop_signal;
+public:
+    int timeout;
+    int interrupted;
+    GMutex loop_signal;
 
-        drakvuf_c(const char* domain,
-                  const char *rekall_profile,
-                  const output_format_t output,
-                  const int timeout,
-                  const bool verbose,
-                  const bool leave_paused);
-        ~drakvuf_c();
+    const char* process_start_name;
+    bool process_start_detected;
+    int process_start_timeout;
+    GMutex loop_signal2;
 
-        int is_initialized();
-        void interrupt(int signal);
-        void loop();
-        void pause();
-        void resume();
-        int inject_cmd(vmi_pid_t injection_pid, uint32_t injection_tid, const char *inject_cmd);
-        int start_plugins(const bool* plugin_list, const char *dump_folder, bool cpuid_stealth);
+    drakvuf_c(const char* domain,
+              const char* rekall_profile,
+              const output_format_t output,
+              const int timeout,
+              const bool verbose,
+              const bool leave_paused);
+    ~drakvuf_c();
+
+    int is_initialized();
+    void interrupt(int signal);
+    void loop();
+    void pause();
+    void resume();
+    int inject_cmd(vmi_pid_t injection_pid, uint32_t injection_tid, const char* inject_cmd, const char* cwd, injection_method_t method, output_format_t format, const char* binary_path, const char* target_process);
+    int start_plugins(const bool* plugin_list,
+                      const char* dump_folder,
+                      bool dump_modified_files,
+                      bool filedelete_use_injector,
+                      bool cpuid_stealth,
+                      const char* tcpip_profile,
+                      const char* syscalls_filter_file,
+                      bool abort_on_bsod );
+    bool wait_for_process(const char* processname);
+
 };
 
 #endif

@@ -102,9 +102,12 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <unistd.h>
 #include <libvmi/libvmi.h>
 
 #include <libdrakvuf/libdrakvuf.h>
@@ -112,32 +115,113 @@
 
 static drakvuf_t drakvuf;
 
-static void close_handler(int sig) {
+static void close_handler(int sig)
+{
     drakvuf_interrupt(drakvuf, sig);
+}
+
+static inline void print_help(void)
+{
+    fprintf(stderr, "Required input:\n"
+            "\t -r <rekall profile>       The Rekall profile of the OS kernel\n"
+            "\t -d <domain ID or name>    The domain's ID or name\n"
+            "\t -i <injection pid>        The PID of the process to hijack for injection\n"
+            "\t -e <inject_file>          The executable to start with injection\n"
+            "Optional inputs:\n"
+            "\t -m <inject_method>        The injection method (createproc (32 and 64-bit), shellexec, shellcode or doppelganging (Win10) for Windows amd64 only)\n"
+            "\t [-B] <path>               The host path of the windows binary to inject (requires -m doppelganging)\n"
+            "\t [-P] <target>             The guest path of the clean guest process to use as a cover (requires -m doppelganging)\n"
+            "\t -I <injection thread>     The ThreadID in the process to hijack for injection (requires -i)\n"
+            "\t -c <current_working_dir>  The current working directory for injected executable\n"
+#ifdef DRAKVUF_DEBUG
+            "\t -v                        Turn on verbose (debug) output\n"
+#endif
+           );
 }
 
 int main(int argc, char** argv)
 {
-    if (argc < 5) {
-        printf("Usage: %s <rekall profile> <domain> <pid> <app> [tid]\n", argv[0]);
-        printf("\t<required> [optional]\n");
+    int rc = 0;
+    vmi_pid_t injection_pid = 0;
+    uint32_t injection_thread = 0;
+    char c;
+    char* rekall_profile = NULL;
+    char* domain = NULL;
+    char* inject_file = NULL;
+    char* inject_cwd = NULL;
+    char* binary_path = NULL;
+    char* target_process = NULL;
+    injection_method_t injection_method = INJECT_METHOD_CREATEPROC;
+    bool verbose = 0;
+
+    if (argc < 4)
+    {
+        print_help();
         return 1;
     }
 
-    int rc = 0;
-    const char *rekall_profile = argv[1];
-    const char *domain = argv[2];
-    vmi_pid_t pid = atoi(argv[3]);
-    uint32_t tid = 0;
-    char *app = argv[4];
-    bool verbose = 0;
-
-    if ( argc == 6 )
-        tid = atoi(argv[5]);
-
+    while ((c = getopt (argc, argv, "r:d:i:I:e:m:B:P:v")) != -1)
+        switch (c)
+        {
+            case 'r':
+                rekall_profile = optarg;
+                break;
+            case 'd':
+                domain = optarg;
+                break;
+            case 'i':
+                injection_pid = atoi(optarg);
+                break;
+            case 'I':
+                injection_thread = atoi(optarg);
+                break;
+            case 'e':
+                inject_file = optarg;
+                break;
+            case 'c':
+                inject_cwd = optarg;
+                break;
+            case 'm':
+                if (!strncmp(optarg,"shellexec",9))
+                    injection_method = INJECT_METHOD_SHELLEXEC;
+                else if (!strncmp(optarg,"createproc",10))
+                    injection_method = INJECT_METHOD_CREATEPROC;
+                else if (!strncmp(optarg,"shellcode",9))
+                    injection_method = INJECT_METHOD_SHELLCODE;
+                else if (!strncmp(optarg,"doppelganging",13))
+                    injection_method = INJECT_METHOD_DOPP;
+                else
+                {
+                    fprintf(stderr, "Unrecognized injection method\n");
+                    return rc;
+                }
+                break;
+            case 'B':
+                binary_path = optarg;
+                break;
+            case 'P':
+                target_process = optarg;
+                break;
 #ifdef DRAKVUF_DEBUG
-    verbose = 1;
+            case 'v':
+                verbose = 1;
+                break;
 #endif
+            default:
+                fprintf(stderr, "Unrecognized option: %c\n", c);
+                return rc;
+        }
+
+    if ( !rekall_profile || !domain || !injection_pid || !inject_file )
+    {
+        print_help();
+        return 1;
+    }
+    if ( INJECT_METHOD_DOPP == injection_method && (!binary_path || !target_process) )
+    {
+        print_help();
+        return 1;
+    }
 
     /* for a clean exit */
     struct sigaction act;
@@ -149,20 +233,21 @@ int main(int argc, char** argv)
     sigaction(SIGINT, &act, NULL);
     sigaction(SIGALRM, &act, NULL);
 
-    if (!drakvuf_init(&drakvuf, domain, rekall_profile, verbose)) {
+    if (!drakvuf_init(&drakvuf, domain, rekall_profile, verbose))
+    {
         fprintf(stderr, "Failed to initialize on domain %s\n", domain);
-        return rc;
+        return 1;
     }
 
-    if (pid > 0 && app) {
-        printf("Injector starting %s through PID %u TID: %u\n", app, pid, tid);
-        rc = injector_start_app(drakvuf, pid, tid, app);
+    printf("Injector starting %s through PID %u TID: %u\n", inject_file, injection_pid, injection_thread);
+    int injection_result = injector_start_app(drakvuf, injection_pid, injection_thread, inject_file, inject_cwd, injection_method, OUTPUT_DEFAULT, binary_path, target_process);
 
-        if (!rc) {
-            printf("Process startup failed\n");
-        } else {
-            printf("Process startup success\n");
-        }
+    if (injection_result)
+        printf("Process startup success\n");
+    else
+    {
+        printf("Process startup failed\n");
+        rc = 1;
     }
 
     drakvuf_close(drakvuf, 0);

@@ -105,6 +105,14 @@
 #ifndef DRAKVUF_PLUGINS_PRIVATE_H
 #define DRAKVUF_PLUGINS_PRIVATE_H
 
+static const char* userid[] =
+{
+    [VMI_OS_WINDOWS] = "SessionID",
+    [VMI_OS_LINUX] = "UID"
+};
+
+#define USERIDSTR(drakvuf) (userid[drakvuf_get_os_type(drakvuf)])
+
 #ifdef DRAKVUF_DEBUG
 
 // This is defined in libdrakvuf
@@ -112,7 +120,7 @@ extern bool verbose;
 
 #define PRINT_DEBUG(...) \
     do { \
-        if(verbose) fprintf (stderr, __VA_ARGS__); \
+        if(verbose) { eprint_current_time(); fprintf (stderr, __VA_ARGS__); } \
     } while (0)
 
 #else

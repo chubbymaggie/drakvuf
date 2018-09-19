@@ -107,25 +107,33 @@
 
 #include <config.h>
 #include <stdlib.h>
+#include <inttypes.h>
+#include <sys/time.h>
 #include <libdrakvuf/libdrakvuf.h>
 
 /***************************************************************************/
 
 /* Plugin-specific configuration input */
-struct filedelete_config {
-    const char *rekall_profile;
-    const char *dump_folder;
+struct filedelete_config
+{
+    const char* dump_folder;
+    bool dump_modified_files;
+    bool filedelete_use_injector;
+};
+struct socketmon_config
+{
+    const char* tcpip_profile;
+    json_object* tcpip_profile_json;
+};
+struct syscalls_config
+{
+    const char* syscalls_filter_file;
 };
 
 /***************************************************************************/
 
-typedef enum {
-    OUTPUT_DEFAULT,
-    OUTPUT_CSV,
-    __OUTPUT_MAX
-} output_format_t;
-
-typedef enum drakvuf_plugin {
+typedef enum drakvuf_plugin
+{
     PLUGIN_SYSCALLS,
     PLUGIN_POOLMON,
     PLUGIN_FILETRACER,
@@ -134,11 +142,17 @@ typedef enum drakvuf_plugin {
     PLUGIN_EXMON,
     PLUGIN_SSDTMON,
     PLUGIN_DEBUGMON,
+    PLUGIN_DELAYMON,
     PLUGIN_CPUIDMON,
+    PLUGIN_SOCKETMON,
+    PLUGIN_REGMON,
+    PLUGIN_PROCMON,
+    PLUGIN_BSODMON,
     __DRAKVUF_PLUGIN_LIST_MAX
 } drakvuf_plugin_t;
 
-static const char *drakvuf_plugin_names[] = {
+static const char* drakvuf_plugin_names[] =
+{
     [PLUGIN_SYSCALLS] = "syscalls",
     [PLUGIN_POOLMON] = "poolmon",
     [PLUGIN_FILETRACER] = "filetracer",
@@ -147,10 +161,16 @@ static const char *drakvuf_plugin_names[] = {
     [PLUGIN_EXMON] = "exmon",
     [PLUGIN_SSDTMON] = "ssdtmon",
     [PLUGIN_DEBUGMON] = "debugmon",
+    [PLUGIN_DELAYMON] = "delaymon",
     [PLUGIN_CPUIDMON] = "cpuidmon",
+    [PLUGIN_SOCKETMON] = "socketmon",
+    [PLUGIN_REGMON] = "regmon",
+    [PLUGIN_PROCMON] = "procmon",
+    [PLUGIN_BSODMON] = "bsodmon",
 };
 
-static const bool drakvuf_plugin_os_support[__DRAKVUF_PLUGIN_LIST_MAX][VMI_OS_WINDOWS+1] = {
+static const bool drakvuf_plugin_os_support[__DRAKVUF_PLUGIN_LIST_MAX][VMI_OS_WINDOWS+1] =
+{
     [PLUGIN_SYSCALLS]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
     [PLUGIN_POOLMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_FILETRACER] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
@@ -159,28 +179,49 @@ static const bool drakvuf_plugin_os_support[__DRAKVUF_PLUGIN_LIST_MAX][VMI_OS_WI
     [PLUGIN_EXMON]      = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_SSDTMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_DEBUGMON]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
+    [PLUGIN_DELAYMON]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_CPUIDMON]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
+    [PLUGIN_SOCKETMON]  = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
+    [PLUGIN_REGMON]     = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
+    [PLUGIN_PROCMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
+    [PLUGIN_BSODMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
 };
 
-class plugin {
-    public:
-        virtual ~plugin() {};
+class plugin
+{
+public:
+    virtual ~plugin() {};
 };
 
 class drakvuf_plugins
 {
-    private:
-        drakvuf_t drakvuf;
-        output_format_t output;
-        os_t os;
-        plugin* plugins[__DRAKVUF_PLUGIN_LIST_MAX] = { [0 ... __DRAKVUF_PLUGIN_LIST_MAX-1] = NULL };
+private:
+    drakvuf_t drakvuf;
+    output_format_t output;
+    os_t os;
+    plugin* plugins[__DRAKVUF_PLUGIN_LIST_MAX] = { [0 ... __DRAKVUF_PLUGIN_LIST_MAX-1] = NULL };
 
-    public:
-        drakvuf_plugins(drakvuf_t drakvuf, output_format_t output, os_t os);
-        ~drakvuf_plugins();
-        int start(drakvuf_plugin_t plugin, const void* config);
+public:
+    drakvuf_plugins(drakvuf_t drakvuf, output_format_t output, os_t os);
+    ~drakvuf_plugins();
+    int start(drakvuf_plugin_t plugin, const void* config);
 };
 
 /***************************************************************************/
+
+struct vmi_lock_guard
+{
+    vmi_lock_guard(drakvuf_t drakvuf_) : drakvuf(drakvuf_), vmi( drakvuf_lock_and_get_vmi(this->drakvuf) )
+    {
+    }
+
+    ~vmi_lock_guard()
+    {
+        drakvuf_release_vmi(this->drakvuf);
+    }
+
+    drakvuf_t drakvuf;
+    vmi_instance_t vmi;
+};
 
 #endif

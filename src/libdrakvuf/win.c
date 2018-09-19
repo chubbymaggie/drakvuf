@@ -119,7 +119,7 @@
 #include "win-offsets.h"
 #include "win-offsets-map.h"
 
-bool win_inject_traps_modules(drakvuf_t drakvuf, drakvuf_trap_t *trap,
+bool win_inject_traps_modules(drakvuf_t drakvuf, drakvuf_trap_t* trap,
                               addr_t list_head, vmi_pid_t pid)
 {
     vmi_instance_t vmi = drakvuf->vmi;
@@ -127,7 +127,8 @@ bool win_inject_traps_modules(drakvuf_t drakvuf, drakvuf_trap_t *trap,
     addr_t tmp_next;
     addr_t dllbase;
 
-    while (1) {
+    while (1)
+    {
 
         if ( VMI_FAILURE == vmi_read_addr_va(vmi, next_module, pid, &tmp_next) )
             break;
@@ -141,18 +142,20 @@ bool win_inject_traps_modules(drakvuf_t drakvuf, drakvuf_trap_t *trap,
         if (!dllbase)
             break;
 
-        unicode_string_t *us = vmi_read_unicode_str_va(vmi, next_module + drakvuf->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], pid);
+        unicode_string_t* us = vmi_read_unicode_str_va(vmi, next_module + drakvuf->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], pid);
         unicode_string_t out = { .contents = NULL };
 
-        if (us) {
+        if (us)
+        {
             status_t status = vmi_convert_str_encoding(us, &out, "UTF-8");
-            if(VMI_SUCCESS == status)
+            if (VMI_SUCCESS == status)
                 PRINT_DEBUG("\t%s @ 0x%" PRIx64 "\n", out.contents, dllbase);
 
             vmi_free_unicode_str(us);
         }
 
-        if(out.contents && !strcmp((char*)out.contents,trap->breakpoint.module)) {
+        if (out.contents && !strcmp((char*)out.contents,trap->breakpoint.module))
+        {
             g_free(out.contents);
             return inject_trap(drakvuf, trap, dllbase, pid);
         }
@@ -163,13 +166,15 @@ bool win_inject_traps_modules(drakvuf_t drakvuf, drakvuf_trap_t *trap,
     return 0;
 }
 
-bool win_get_module_base_addr( drakvuf_t drakvuf, addr_t module_list_head, const char *module_name, addr_t *base_addr_out ) {
+bool win_get_module_base_addr( drakvuf_t drakvuf, addr_t module_list_head, const char* module_name, addr_t* base_addr_out )
+{
     addr_t base_addr ;
     size_t name_len = strlen( module_name );
     vmi_instance_t vmi = drakvuf->vmi;
     addr_t next_module = module_list_head;
+    int limit = 100, counter = 0;
 
-    while( 1 )
+    while ( counter < limit )
     {
         addr_t tmp_next = 0;
 
@@ -187,41 +192,48 @@ bool win_get_module_base_addr( drakvuf_t drakvuf, addr_t module_list_head, const
         if ( ! base_addr )
             break;
 
-        unicode_string_t *us = vmi_read_unicode_str_va( vmi, next_module + drakvuf->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4 );
+        unicode_string_t* us = vmi_read_unicode_str_va( vmi, next_module + drakvuf->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4 );
 
         if ( us )
         {
             unicode_string_t out = { 0 };
-            if ( vmi_convert_str_encoding( us, &out, "UTF-8" ) == VMI_SUCCESS  )
+            if ( VMI_FAILURE == vmi_convert_str_encoding( us, &out, "UTF-8" ) )
             {
-                if ( ! strncasecmp( (char *)out.contents, module_name, name_len ) )
-                {
-                    free( out.contents );
-                    vmi_free_unicode_str( us );
-                    *base_addr_out = base_addr ;
-                    return true ;
-                }
-
-                free( out.contents );
+                vmi_free_unicode_str(us);
+                break;
             }
+
+            if ( ! strncasecmp( (char*)out.contents, module_name, name_len ) )
+            {
+                free( out.contents );
+                vmi_free_unicode_str( us );
+                *base_addr_out = base_addr ;
+                return true ;
+            }
+
+            free( out.contents );
             vmi_free_unicode_str( us );
         }
 
-        next_module = tmp_next ;
+        next_module = tmp_next;
+        counter++;
     }
 
+    PRINT_DEBUG("Failed to find %s in list starting at 0x%lx\n", module_name, module_list_head);
     return false ;
 }
 
-static bool find_kernbase(drakvuf_t drakvuf) {
-    addr_t sysproc_rva;
-    addr_t sysproc = vmi_translate_ksym2v(drakvuf->vmi, "PsInitialSystemProcess");
-    if ( !sysproc ) {
+static bool find_kernbase(drakvuf_t drakvuf)
+{
+    addr_t sysproc_rva, sysproc;
+    if ( VMI_FAILURE == vmi_translate_ksym2v(drakvuf->vmi, "PsInitialSystemProcess", &sysproc) )
+    {
         printf("LibVMI failed to get us the VA of PsInitialSystemProcess!\n");
         return 0;
     }
 
-    if ( VMI_FAILURE == drakvuf_get_constant_rva(drakvuf->rekall_profile, "PsInitialSystemProcess", &sysproc_rva) ) {
+    if ( !drakvuf_get_constant_rva(drakvuf, "PsInitialSystemProcess", &sysproc_rva) )
+    {
         fprintf(stderr, "Failed to get PsInitialSystemProcess RVA from Rekall profile!\n");
         return 0;
     }
@@ -232,51 +244,77 @@ static bool find_kernbase(drakvuf_t drakvuf) {
     return 1;
 }
 
-static bool fill_offsets_from_rekall(drakvuf_t drakvuf) {
-    unsigned int i;
+addr_t win_get_function_argument(drakvuf_t drakvuf, drakvuf_trap_info_t* info, int narg)
+{
+    page_mode_t pm = drakvuf_get_page_mode(drakvuf);
+    if (pm == VMI_PM_IA32E)
+    {
+        switch (narg)
+        {
+            case 1:
+                return info->regs->rcx;
+            case 2:
+                return info->regs->rdx;
+            case 3:
+                return info->regs->r8;
+            case 4:
+                return info->regs->r9;
+        }
+    }
 
-    drakvuf->offsets = g_malloc0(sizeof(addr_t) * __WIN_OFFSETS_MAX);
-    if ( !drakvuf->offsets )
+    access_context_t ctx =
+    {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+        .addr = info->regs->rsp + narg * drakvuf_get_address_width(drakvuf),
+    };
+
+    addr_t addr;
+    if (VMI_FAILURE == vmi_read_addr(drakvuf->vmi, &ctx, &addr))
         return 0;
-
-    for (i = 0; i < __WIN_OFFSETS_MAX; i++) {
-         if (VMI_FAILURE == drakvuf_get_struct_member_rva(
-                     drakvuf->rekall_profile, win_offset_names[i][0],
-                     win_offset_names[i][1], &drakvuf->offsets[i]))
-         {
-             PRINT_DEBUG("Failed to find offset for %s:%s\n",
-                         win_offset_names[i][0], win_offset_names[i][1]);
-         }
-     }
-
-    return 1;
+    return addr;
 }
 
-bool set_os_windows(drakvuf_t drakvuf) {
+bool set_os_windows(drakvuf_t drakvuf)
+{
 
     if ( !find_kernbase(drakvuf) )
         return 0;
 
     // Get the offsets from the Rekall profile
-    if ( !fill_offsets_from_rekall(drakvuf) )
+    if ( !fill_offsets_from_rekall(drakvuf, __WIN_OFFSETS_MAX, win_offset_names) )
+        return 0;
+
+    drakvuf->sizes = g_malloc0(sizeof(size_t) * __WIN_SIZES_MAX);
+    if ( !drakvuf->sizes )
+        return 0;
+
+    if ( !drakvuf_get_struct_size(drakvuf, "_HANDLE_TABLE_ENTRY", &drakvuf->sizes[HANDLE_TABLE_ENTRY]) )
         return 0;
 
     drakvuf->osi.get_current_thread = win_get_current_thread;
     drakvuf->osi.get_current_process = win_get_current_process;
     drakvuf->osi.get_process_name = win_get_process_name;
     drakvuf->osi.get_current_process_name = win_get_current_process_name;
-    drakvuf->osi.get_process_sessionid = win_get_process_sessionid;
-    drakvuf->osi.get_current_process_sessionid = win_get_process_sessionid;
+    drakvuf->osi.get_process_userid = win_get_process_userid;
+    drakvuf->osi.get_current_process_userid = win_get_current_process_userid;
     drakvuf->osi.get_current_thread_id = win_get_current_thread_id;
     drakvuf->osi.get_thread_previous_mode = win_get_thread_previous_mode;
     drakvuf->osi.get_current_thread_previous_mode = win_get_current_thread_previous_mode;
     drakvuf->osi.get_module_base_addr = win_get_module_base_addr;
-    drakvuf->osi.is_eprocess = win_is_eprocess;
-    drakvuf->osi.is_ethread = win_is_ethread;
+    drakvuf->osi.is_process = win_is_eprocess;
+    drakvuf->osi.is_thread = win_is_ethread;
     drakvuf->osi.get_module_list = win_get_module_list;
-    drakvuf->osi.find_eprocess = win_find_eprocess;
+    drakvuf->osi.find_process = win_find_eprocess;
     drakvuf->osi.inject_traps_modules = win_inject_traps_modules;
+    drakvuf->osi.exportksym_to_va = ksym2va;
     drakvuf->osi.exportsym_to_va = eprocess_sym2va;
+    drakvuf->osi.get_process_pid = win_get_process_pid;
+    drakvuf->osi.get_process_ppid = win_get_process_ppid;
+    drakvuf->osi.get_current_process_data = win_get_current_process_data;
+    drakvuf->osi.get_registry_keyhandle_path = win_reg_keyhandle_path;
+    drakvuf->osi.get_filename_from_handle = win_get_filename_from_handle;
+    drakvuf->osi.get_function_argument = win_get_function_argument;
 
-    return 1;
-};
+    return true;
+}

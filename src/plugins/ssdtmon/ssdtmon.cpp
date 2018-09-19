@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -122,62 +122,80 @@
 #include "private.h"
 #include "ssdtmon.h"
 
-event_response_t write_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info) {
+event_response_t write_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
 
     ssdtmon* s = (ssdtmon*)info->trap->data;
 
     if ( info->trap_pa > s->kiservicetable - 8 && info->trap_pa <= s->kiservicetable + s->ulongs * s->kiservicelimit + s->ulongs - 1 )
     {
-        switch(s->format) {
-        case OUTPUT_CSV:
-            printf("ssdtmon,%" PRIu32 ",0x%" PRIx64 ",%s,%" PRIi64 ", %" PRIi64 "\n",
-                info->vcpu, info->regs->cr3, info->procname, info->sessionid, (info->trap_pa - s->kiservicetable)/s->ulongs);
-            break;
-        default:
-        case OUTPUT_DEFAULT:
-            printf("[SSDTMON] VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",%s SessionID:%" PRIi64" Table index:%" PRIi64 "\n",
-                   info->vcpu, info->regs->cr3, info->procname, info->sessionid, (info->trap_pa - s->kiservicetable)/s->ulongs);
-            break;
-        };
+        int64_t table_index = (info->trap_pa - s->kiservicetable) / s->ulongs;
+        switch (s->format)
+        {
+            case OUTPUT_CSV:
+                printf("ssdtmon," FORMAT_TIMEVAL ",%" PRIu32 ",0x%" PRIx64 ",\"%s\",%" PRIi64 ", %" PRIi64 "\n",
+                       UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid, table_index);
+                break;
+
+            case OUTPUT_KV:
+                printf("ssdtmon Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\",TableIndex=%" PRIi64 "\n",
+                       UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name, table_index);
+                break;
+
+            default:
+            case OUTPUT_DEFAULT:
+                printf("[SSDTMON] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64" Table index:%" PRIi64 "\n",
+                       UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                       USERIDSTR(drakvuf), info->proc_data.userid, table_index);
+                break;
+        }
     }
     return 0;
 }
 
 /* ----------------------------------------------------- */
 
-ssdtmon::ssdtmon(drakvuf_t drakvuf, const void *config, output_format_t output) {
-    const char *rekall_profile = (const char*)config;
+ssdtmon::ssdtmon(drakvuf_t drakvuf, const void* config, output_format_t output)
+{
     addr_t kiservicetable_rva = 0, kiservicelimit_rva = 0;
     addr_t kernbase = 0;
 
     this->format = output;
 
-    if ( drakvuf_get_constant_rva(rekall_profile, "KiServiceTable", &kiservicetable_rva) == VMI_FAILURE ) {
+    if ( !drakvuf_get_constant_rva(drakvuf, "KiServiceTable", &kiservicetable_rva) )
+    {
         PRINT_DEBUG("SSDT plugin can't find KiServiceTable RVA\n");
         throw -1;
     }
-    if ( drakvuf_get_constant_rva(rekall_profile, "KiServiceLimit", &kiservicelimit_rva) == VMI_FAILURE ) {
+    if ( !drakvuf_get_constant_rva(drakvuf, "KiServiceLimit", &kiservicelimit_rva) )
+    {
         PRINT_DEBUG("SSDT plugin can't find KiServiceLimit RVA\n");
         throw -1;
     }
 
     kernbase = drakvuf_get_kernel_base(drakvuf);
-    if ( !kernbase ) {
+    if ( !kernbase )
+    {
         PRINT_DEBUG("SSDT plugin can't find kernel base address\n");
         throw -1;
     }
 
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-    page_mode_t pm = vmi_get_page_mode(vmi);
-    this->kiservicetable = vmi_translate_kv2p(vmi, kernbase + kiservicetable_rva);
+    page_mode_t pm = vmi_get_page_mode(vmi, 0);
+
+    if ( VMI_FAILURE == vmi_translate_kv2p(vmi, kernbase + kiservicetable_rva, &this->kiservicetable) )
+        throw -1;
+
     vmi_read_32_va(vmi, kernbase + kiservicelimit_rva, 0, &this->kiservicelimit);
     drakvuf_release_vmi(drakvuf);
 
-    if ( !this->kiservicetable ) {
+    if ( !this->kiservicetable )
+    {
         PRINT_DEBUG("SSDT plugin can't find the physical address of KiServiceTable\n");
         throw -1;
     }
-    if ( !this->kiservicelimit ) {
+    if ( !this->kiservicelimit )
+    {
         PRINT_DEBUG("SSDT plugin can't read the value of KiServiceLimit\n");
         throw -1;
     }
@@ -198,7 +216,8 @@ ssdtmon::ssdtmon(drakvuf_t drakvuf, const void *config, output_format_t output) 
 
     addr_t ssdtwrite_end = (this->kiservicetable + this->ulongs * this->kiservicelimit) >> 12;
 
-    if ( !drakvuf_add_trap(drakvuf, &this->ssdtwrite) ) {
+    if ( !drakvuf_add_trap(drakvuf, &this->ssdtwrite) )
+    {
         PRINT_DEBUG("SSDT plugin failed to trap on \n");
         throw -1;
     }

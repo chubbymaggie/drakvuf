@@ -105,17 +105,19 @@
 #ifndef CPUIDMON_H
 #define CPUIDMON_H
 
+#include "plugins/private.h"
 #include "plugins/plugins.h"
 
-class cpuidmon: public plugin {
-    public:
-        output_format_t format;
-        drakvuf_trap_t cpuid;
-        drakvuf_t drakvuf;
-        bool stealth;
+class cpuidmon: public plugin
+{
+public:
+    output_format_t format;
+    drakvuf_trap_t cpuid;
+    drakvuf_t drakvuf;
+    bool stealth;
 
-        cpuidmon(drakvuf_t drakvuf, const void *config, output_format_t output);
-        ~cpuidmon();
+    cpuidmon(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~cpuidmon();
 };
 
 #endif

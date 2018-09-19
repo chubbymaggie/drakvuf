@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -118,7 +118,6 @@
 #include <err.h>
 
 #include <libvmi/libvmi.h>
-#include "private.h"
 #include "objmon.h"
 
 /*
@@ -136,37 +135,65 @@
  OUT PVOID *Object
  );
  */
-static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
-    objmon *o = (objmon *)info->trap->data;
+struct ckey
+{
+    union
+    {
+        uint32_t key;
+        char _key[4];
+    };
+};
+
+static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+
+    objmon* o = (objmon*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-    uint8_t index = ~0;
+    struct ckey ckey = {};
 
     access_context_t ctx;
     ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
     ctx.dtb = info->regs->cr3;
-    ctx.addr = info->regs->rdx + o->typeindex_offset;
 
-    vmi_read_8(vmi, &ctx, &index);
-
-    if(index < WIN7_TYPEINDEX_LAST)
+    if ( o->pm == VMI_PM_IA32E )
     {
-        switch(o->format) {
+        ctx.addr = info->regs->rdx;
+    }
+    else
+    {
+        ctx.addr = info->regs->rsp + sizeof(uint32_t)*2;
+        vmi_read_32(vmi, &ctx, (uint32_t*)&ctx.addr);
+    }
+
+    ctx.addr += o->key_offset;
+
+    vmi_read_32(vmi, &ctx, &ckey.key);
+
+    switch (o->format)
+    {
         case OUTPUT_CSV:
-        {
-            printf("objmon,%" PRIu32 ",0x%" PRIx64 ",%s,%" PRIi64 ",%s",
-                   info->vcpu, info->regs->cr3, info->procname, info->sessionid, win7_typeindex[index]);
+            printf("objmon," FORMAT_TIMEVAL ",%" PRIu32 ",0x%" PRIx64 ",\"%s\",%" PRIi64 ",%c%c%c%c",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid,
+                   ckey._key[0], ckey._key[1], ckey._key[2], ckey._key[3]);
             break;
-        }
+
+        case OUTPUT_KV:
+            printf("objmon Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\",Key=\"%c%c%c%c\"",
+                   UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name,
+                   ckey._key[0], ckey._key[1], ckey._key[2], ckey._key[3]);
+            break;
+
         default:
         case OUTPUT_DEFAULT:
-            printf("[OBJMON] vCPU:%" PRIu32 " CR3:0x%" PRIx64 ",%s SessionID:%" PRIi64" %s",
-                   info->vcpu, info->regs->cr3, info->procname, info->sessionid, win7_typeindex[index]);
+            printf("[OBJMON] TIME:" FORMAT_TIMEVAL " VCPU:%" PRIu32 " CR3:0x%" PRIx64 ",\"%s\" %s:%" PRIi64" '%c%c%c%c'",
+                   UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name,
+                   USERIDSTR(drakvuf), info->proc_data.userid,
+                   ckey._key[0], ckey._key[1], ckey._key[2], ckey._key[3]);
             break;
-        };
-
-        printf("\n");
     }
+
+    printf("\n");
 
     drakvuf_release_vmi(drakvuf);
     return 0;
@@ -174,15 +201,17 @@ static event_response_t cb(drakvuf_t drakvuf, drakvuf_trap_info_t *info) {
 
 /* ----------------------------------------------------- */
 
-objmon::objmon(drakvuf_t drakvuf, const void *config, output_format_t output) {
-    const char *rekall_profile = (const char *)config;
-
-    if(VMI_FAILURE == drakvuf_get_function_rva(rekall_profile, "ObCreateObject", &this->trap.breakpoint.rva))
+objmon::objmon(drakvuf_t drakvuf, const void* config, output_format_t output)
+{
+    if ( !drakvuf_get_function_rva(drakvuf, "ObCreateObject", &this->trap.breakpoint.rva) )
         throw -1;
-    if (VMI_FAILURE==drakvuf_get_struct_member_rva(rekall_profile, "_OBJECT_HEADER", "TypeIndex", &this->typeindex_offset))
+    if ( !drakvuf_get_struct_member_rva(drakvuf, "_OBJECT_TYPE", "Key", &this->key_offset) )
         throw -1;
 
     this->trap.cb = cb;
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    this->pm = vmi_get_page_mode(vmi, 0);
+    drakvuf_release_vmi(drakvuf);
 
     this->format = output;
     if ( !drakvuf_add_trap(drakvuf, &this->trap) )

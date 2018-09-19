@@ -138,8 +138,28 @@ if PLUGIN_DEBUGMON
 sources += debugmon/debugmon.cpp
 endif
 
+if PLUGIN_DELAYMON
+sources += delaymon/delaymon.cpp
+endif
+
 if PLUGIN_CPUIDMON
 sources += cpuidmon/cpuidmon.cpp
+endif
+
+if PLUGIN_SOCKETMON
+sources += socketmon/socketmon.cpp
+endif
+
+if PLUGIN_REGMON
+sources += regmon/regmon.cpp
+endif
+
+if PLUGIN_PROCMON
+sources += procmon/procmon.cpp
+endif
+
+if PLUGIN_BSODMON
+sources += bsodmon/bsodmon.cpp bsodmon/bugcheck.cpp
 endif
 
 ###############################################################################
@@ -159,6 +179,7 @@ AM_CPPFLAGS += $(HARDEN_CFLAGS) -DHARDENING
 if DEBUG
 AM_CPPFLAGS += -DDRAKVUF_DEBUG -Werror -Wall -Wextra -g -ggdb3
 AM_CPPFLAGS += -Wno-missing-field-initializers -Wno-unused-parameter
+AM_CPPFLAGS += -Wno-initializer-overrides
 if !HARDENING
 AM_CPPFLAGS += -pg
 endif

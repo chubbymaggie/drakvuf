@@ -108,15 +108,18 @@
 /*
  * Map offset enums to actual structure+member or global variable/function names.
  */
-static const char *win_offset_names[__WIN_OFFSETS_MAX][2] = {
+static const char* win_offset_names[__WIN_OFFSETS_MAX][2] =
+{
     [KIINITIALPCR] = { "KiInitialPCR", NULL },
     [EPROCESS_PID] = { "_EPROCESS", "UniqueProcessId" },
     [EPROCESS_PDBASE] = { "_KPROCESS", "DirectoryTableBase" },
     [EPROCESS_PNAME] = { "_EPROCESS", "ImageFileName" },
+    [EPROCESS_PROCCREATIONINFO] = { "_EPROCESS", "SeAuditProcessCreationInfo" },
     [EPROCESS_TASKS] = { "_EPROCESS", "ActiveProcessLinks" },
     [EPROCESS_PEB] = { "_EPROCESS", "Peb" },
     [EPROCESS_OBJECTTABLE] = {"_EPROCESS", "ObjectTable" },
     [EPROCESS_PCB] = { "_EPROCESS", "Pcb" },
+    [EPROCESS_INHERITEDPID] = { "_EPROCESS", "InheritedFromUniqueProcessId" },
     [KPROCESS_HEADER] = { "_KPROCESS", "Header" },
     [PEB_IMAGEBASADDRESS] = { "_PEB", "ImageBaseAddress" },
     [PEB_LDR] = { "_PEB", "Ldr" },
@@ -125,36 +128,35 @@ static const char *win_offset_names[__WIN_OFFSETS_MAX][2] = {
     [LDR_DATA_TABLE_ENTRY_DLLBASE] = { "_LDR_DATA_TABLE_ENTRY", "DllBase" },
     [LDR_DATA_TABLE_ENTRY_SIZEOFIMAGE] = { "_LDR_DATA_TABLE_ENTRY", "SizeOfImage" },
     [LDR_DATA_TABLE_ENTRY_BASEDLLNAME] = { "_LDR_DATA_TABLE_ENTRY", "BaseDllName" },
-    [FILE_OBJECT_DEVICEOBJECT] = {"_FILE_OBJECT", "DeviceObject" },
-    [FILE_OBJECT_READACCESS] = {"_FILE_OBJECT", "ReadAccess" },
-    [FILE_OBJECT_WRITEACCESS] = {"_FILE_OBJECT", "WriteAccess" },
-    [FILE_OBJECT_DELETEACCESS] = {"_FILE_OBJECT", "DeleteAccess" },
-    [FILE_OBJECT_FILENAME] = {"_FILE_OBJECT", "FileName"},
-    [HANDLE_TABLE_HANDLECOUNT] = {"_HANDLE_TABLE", "HandleCount" },
+    [HANDLE_TABLE_TABLECODE] = {"_HANDLE_TABLE", "TableCode" },
     [KPCR_PRCB] = {"_KPCR", "Prcb" },
     [KPCR_PRCBDATA] = {"_KPCR", "PrcbData" },
     [KPRCB_CURRENTTHREAD] = { "_KPRCB", "CurrentThread" },
     [KTHREAD_PROCESS] = {"_KTHREAD", "Process" },
-    [KTHREAD_INITIALSTACK] = {"_KTHREAD", "InitialStack"},
-    [KTHREAD_STACKLIMIT] = {"_KTHREAD", "StackLimit"},
-    [KTHREAD_TRAPFRAME] = {"_KTHREAD", "TrapFrame" },
-    [KTHREAD_APCSTATE] = {"_KTHREAD", "ApcState" },
-    [KTHREAD_APCQUEUEABLE] = {"_KTHREAD", "ApcQueueable"},
     [KTHREAD_PREVIOUSMODE] = { "_KTHREAD", "PreviousMode" },
     [KTHREAD_HEADER] = { "_KTHREAD", "Header" },
-    [KAPC_APCLISTENTRY] = {"_KAPC", "ApcListEntry" },
-    [KTRAP_FRAME_RIP] = {"_KTRAP_FRAME", "Rip" },
     [ETHREAD_CID] = {"_ETHREAD", "Cid" },
     [ETHREAD_TCB] = { "_ETHREAD", "Tcb" },
     [CLIENT_ID_UNIQUETHREAD] = {"_CLIENT_ID", "UniqueThread" },
     [OBJECT_HEADER_TYPEINDEX] = { "_OBJECT_HEADER", "TypeIndex" },
     [OBJECT_HEADER_BODY] = { "_OBJECT_HEADER", "Body" },
-    [UNICODE_STRING_LENGTH] = {"_UNICODE_STRING", "Length" },
-    [UNICODE_STRING_BUFFER] = {"_UNICODE_STRING", "Buffer" },
     [POOL_HEADER_BLOCKSIZE] = {"_POOL_HEADER", "BlockSize" },
     [POOL_HEADER_POOLTYPE] = {"_POOL_HEADER", "PoolType" },
     [POOL_HEADER_POOLTAG] = {"_POOL_HEADER", "PoolTag" },
     [DISPATCHER_TYPE] = { "_DISPATCHER_HEADER",  "Type" },
+
+    [CM_KEY_CONTROL_BLOCK] = { "_CM_KEY_BODY",           "KeyControlBlock" },
+    [CM_KEY_NAMEBLOCK]     = { "_CM_KEY_CONTROL_BLOCK",  "NameBlock"       },
+    [CM_KEY_NAMEBUFFER]    = { "_CM_NAME_CONTROL_BLOCK", "Name"            },
+    [CM_KEY_NAMELENGTH]    = { "_CM_NAME_CONTROL_BLOCK", "NameLength"      },
+    [CM_KEY_PARENTKCB]     = { "_CM_KEY_CONTROL_BLOCK",  "ParentKcb"       },
+    [CM_KEY_PROCESSID]     = { "_CM_KEY_BODY",           "ProcessID"       },
+
+    [PROCCREATIONINFO_IMAGEFILENAME] = { "_SE_AUDIT_PROCESS_CREATION_INFO", "ImageFileName" },
+    [OBJECTNAMEINFORMATION_NAME] = { "_OBJECT_NAME_INFORMATION", "Name" },
+
+    [FILEOBJECT_NAME] = { "_FILE_OBJECT", "FileName" },
+
 };
 
 #endif

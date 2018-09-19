@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -105,28 +105,52 @@
 #ifndef FILEDELETE_H
 #define FILEDELETE_H
 
+#include "plugins/private.h"
 #include "plugins/plugins.h"
 
-class filedelete: public plugin {
-    public:
-        drakvuf_trap_t traps[4] = {
-            [0 ... 3] = {
-                .breakpoint.lookup_type = LOOKUP_PID,
-                .breakpoint.pid = 4,
-                .breakpoint.addr_type = ADDR_RVA,
-                .breakpoint.module = "ntoskrnl.exe",
-                .type = BREAKPOINT,
-                .data = (void*)this
-            }
-        };
-        size_t* offsets;
+#include <map>
+#include <utility>
+#include <cstdint>
 
-        const char *dump_folder;
-        page_mode_t pm;
-        uint32_t domid;
-        output_format_t format;
-        filedelete(drakvuf_t drakvuf, const void *config, output_format_t output);
-        ~filedelete();
+// For `filedelete2`
+using handle_t = uint64_t;
+using handled_t = bool;
+using file_name_t = std::string;
+
+class filedelete: public plugin
+{
+public:
+    drakvuf_trap_t traps[4] =
+    {
+        [0 ... 3] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
+        }
+    };
+    size_t* offsets;
+    size_t control_area_size, mmpte_size;
+
+    const char* dump_folder;
+    page_mode_t pm;
+    uint32_t domid;
+    output_format_t format;
+    bool use_injector;
+
+    std::map<std::pair<vmi_pid_t, handle_t>, file_name_t> files;
+    int sequence_number;
+
+    filedelete(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~filedelete();
+
+    // For `filedelete2`
+    addr_t queryobject_va;
+    addr_t readfile_va;
+    addr_t waitobject_va;
+    std::map<std::pair<addr_t, uint32_t>, handled_t> closing_handles;
 };
 
 #endif

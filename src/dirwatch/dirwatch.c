@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -112,53 +112,62 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/inotify.h>
+#include <signal.h>
+#include <time.h>
 
 #include "../xen_helper/xen_helper.h"
 
 #define CLONE_CMD       "%s %s %u %s"
-#define DRAKVUF_CMD     "%s %s %u %u %u %s %s %s"
-#define CONFIG_CMD      "%s %s %u %u %u %s %s %s"
+#define DRAKVUF_CMD     "%s %s %u %u %u %s %s %s %lu"
+#define CONFIG_CMD      "%s %s %u %u %u %s %s %s %lu"
 #define CLEANUP_CMD     "%s %u %u"
-#define TCPDUMP_CMD     "%s %u %s %s %s"
+#define TCPDUMP_CMD     "%s %u %s %s %s %lu"
 
 #define UNUSED(x) (void)(x)
 
-struct start_drakvuf {
+struct start_drakvuf
+{
     int threadid;
     domid_t cloneID;
-    char *input;
-    char *clone_name;
+    char* input;
+    char* clone_name;
     GMutex timer_lock;
     uint32_t timer;
+    time_t utime;
 };
 
-static GThreadPool *pool;
-static const char *domain_name;
-static const char *domain_config;
-static const char *rekall_profile;
-static const char *in_folder;
-static const char *run_folder;
-static const char *out_folder;
-static const char *clone_script;
-static const char *config_script;
-static const char *drakvuf_script;
-static const char *cleanup_script;
-static const char *tcpdump_script;
+static GThreadPool* pool;
+static const char* domain_name;
+static const char* domain_config;
+static const char* rekall_profile;
+static const char* in_folder;
+static const char* run_folder;
+static const char* out_folder;
+static const char* clone_script;
+static const char* config_script;
+static const char* drakvuf_script;
+static const char* cleanup_script;
+static const char* tcpdump_script;
 static uint32_t threads;
 static uint32_t injection_pid;
+static bool shutting_down;
 
 static GMutex locks[128];
-static GMutex prepare_lock;
 
-xen_interface_t *xen;
+xen_interface_t* xen;
+
+void close_handler(int signal)
+{
+    shutting_down = signal;
+}
 
 static void
-make_clone(xen_interface_t *xen, domid_t *cloneID, uint16_t vlan, char **clone_name)
+make_clone(xen_interface_t* xen, domid_t* cloneID, uint16_t vlan, char** clone_name)
 {
-    char *command = g_malloc0(snprintf(NULL, 0, CLONE_CMD, clone_script, domain_name, vlan, domain_config) + 1);
+    char* command = g_malloc0(snprintf(NULL, 0, CLONE_CMD, clone_script, domain_name, vlan, domain_config) + 1);
     sprintf(command, CLONE_CMD, clone_script, domain_name, vlan, domain_config);
     printf("** RUNNING COMMAND: %s\n", command);
-    char *output = NULL;
+    char* output = NULL;
     g_spawn_command_line_sync(command, &output, NULL, NULL, NULL);
     g_free(command);
 
@@ -167,10 +176,11 @@ make_clone(xen_interface_t *xen, domid_t *cloneID, uint16_t vlan, char **clone_n
     g_free(output);
 }
 
-gpointer tcpdump(gpointer data) {
-    struct start_drakvuf *start = (struct start_drakvuf *)data;
-    char *command = g_malloc0(snprintf(NULL, 0, TCPDUMP_CMD, tcpdump_script, start->threadid+1, run_folder, start->input, out_folder) + 1);
-    sprintf(command, TCPDUMP_CMD, tcpdump_script, start->threadid+1, run_folder, start->input, out_folder);
+gpointer tcpdump(gpointer data)
+{
+    struct start_drakvuf* start = (struct start_drakvuf*)data;
+    char* command = g_malloc0(snprintf(NULL, 0, TCPDUMP_CMD, tcpdump_script, start->threadid+1, run_folder, start->input, out_folder, start->utime) + 1);
+    sprintf(command, TCPDUMP_CMD, tcpdump_script, start->threadid+1, run_folder, start->input, out_folder, start->utime);
     printf("** RUNNING COMMAND: %s\n", command);
     g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
     g_free(command);
@@ -180,30 +190,35 @@ gpointer tcpdump(gpointer data) {
 static inline int find_thread()
 {
     unsigned int i=0;
-    for (;i<threads;i++) {
-        if(g_mutex_trylock(&locks[i]))
+    for (; i<threads; i++)
+    {
+        if (g_mutex_trylock(&locks[i]))
             return i;
     }
     return -1;
 }
 
-static inline void cleanup(domid_t cloneID, int vlan) {
-    char *command = g_malloc0(snprintf(NULL, 0, CLEANUP_CMD, cleanup_script, cloneID, vlan) + 1);
+static inline void cleanup(domid_t cloneID, int vlan)
+{
+    char* command = g_malloc0(snprintf(NULL, 0, CLEANUP_CMD, cleanup_script, cloneID, vlan) + 1);
     sprintf(command, CLEANUP_CMD, cleanup_script, cloneID, vlan);
     printf("** RUNNING COMMAND: %s\n", command);
     g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
     g_free(command);
 }
 
-gpointer timer_thread(gpointer data) {
+gpointer timer_thread(gpointer data)
+{
 
-    struct start_drakvuf *start = (struct start_drakvuf *)data;
+    struct start_drakvuf* start = (struct start_drakvuf*)data;
 
     gboolean gotlock = FALSE;
 
-    while (start->timer > 0) {
+    while (start->timer > 0)
+    {
         gotlock = g_mutex_trylock(&start->timer_lock);
-        if ( gotlock ) {
+        if ( gotlock )
+        {
             g_mutex_unlock(&start->timer_lock);
             break;
         }
@@ -218,31 +233,24 @@ gpointer timer_thread(gpointer data) {
     return NULL;
 }
 
-static void prepare(char *sample, struct start_drakvuf *start)
+static struct start_drakvuf* prepare(struct start_drakvuf* start, int _threadid)
 {
-    if (!sample && !start)
-        return;
+    if (shutting_down)
+        return NULL;
 
     domid_t cloneID = 0;
-    char *clone_name = NULL;
-    int threadid;
+    char* clone_name = NULL;
+    int threadid = start ? start->threadid : _threadid;
 
-    if (!start)
-        threadid = find_thread();
-    else
-        threadid = start->threadid;
+    if ( shutting_down )
+        return NULL;
 
-    while(threadid<0) {
-        printf("Waiting for a thread to become available..\n");
-        sleep(1);
-        threadid = find_thread();
-    }
-
-    printf("Making clone %i to run %s in thread %u\n", threadid+1, sample ? sample : start->input, threadid);
+    printf("[%i] Making clone\n", threadid);
     make_clone(xen, &cloneID, threadid+1, &clone_name);
 
-    while(!clone_name || !cloneID) {
-        printf("Clone creation failed, trying again\n");
+    while ((!clone_name || !cloneID) && !shutting_down)
+    {
+        printf("[%i] Clone creation failed, trying again\n", threadid);
         free(clone_name);
         clone_name = NULL;
         cloneID = 0;
@@ -250,45 +258,54 @@ static void prepare(char *sample, struct start_drakvuf *start)
         make_clone(xen, &cloneID, threadid+1, &clone_name);
     }
 
-    //g_mutex_lock(&prepare_lock);
+    if ( shutting_down )
+        return NULL;
+
     //uint64_t shared = xen_memshare(xen, domID, cloneID);
     //printf("Shared %"PRIu64" pages\n", shared);
-    //g_mutex_unlock(&prepare_lock);
 
-    if(!start && sample) {
+    if (!start)
+    {
         start = g_malloc0(sizeof(struct start_drakvuf));
-        start->input = sample;
         start->threadid = threadid;
         g_mutex_init(&start->timer_lock);
     }
 
     start->cloneID = cloneID;
     start->clone_name = clone_name;
+    start->utime = time(NULL);
 
-    if(sample) {
-        g_thread_pool_push(pool, start, NULL);
-    }
+    return start;
+}
+
+static inline void start(struct start_drakvuf* start, char* sample)
+{
+    if ( shutting_down || !start || !sample )
+        return;
+
+    start->input = g_strdup(sample);
+    g_thread_pool_push(pool, start, NULL);
 }
 
 void run_drakvuf(gpointer data, gpointer user_data)
 {
     UNUSED(user_data);
-    struct start_drakvuf *start = data;
-    char *command;
+    struct start_drakvuf* start = data;
+    char* command;
     gint rc;
-    GThread *timer, *tcpd;
+    GThread* timer, *tcpd;
 
 restart:
     command = NULL;
     rc = 0;
     printf("[%i] Starting %s on domid %u\n", start->threadid, start->input, start->cloneID);
 
-    start->timer = 180;
+    start->timer = 60;
     g_mutex_lock(&start->timer_lock);
     timer = g_thread_new("timer", timer_thread, start);
 
-    command = g_malloc0(snprintf(NULL, 0, CONFIG_CMD, config_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder) + 1);
-    sprintf(command, CONFIG_CMD, config_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder);
+    command = g_malloc0(snprintf(NULL, 0, CONFIG_CMD, config_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder, start->utime) + 1);
+    sprintf(command, CONFIG_CMD, config_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder, start->utime);
     printf("[%i] ** RUNNING COMMAND: %s\n", start->threadid, command);
     g_spawn_command_line_sync(command, NULL, NULL, &rc, NULL);
     g_free(command);
@@ -303,17 +320,12 @@ restart:
 
     tcpd = g_thread_new("tcpdump", tcpdump, start);
 
-    xc_domain_unpause(xen->xc, start->cloneID);
-    // Preconfigure script takes a bit to run in the guest
-    sleep(30);
-    xc_domain_pause(xen->xc, start->cloneID);
-
     start->timer = 180;
     g_mutex_lock(&start->timer_lock);
     timer = g_thread_new("timer", timer_thread, start);
 
-    command = g_malloc0(snprintf(NULL, 0, DRAKVUF_CMD, drakvuf_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder) + 1);
-    sprintf(command, DRAKVUF_CMD, drakvuf_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder);
+    command = g_malloc0(snprintf(NULL, 0, DRAKVUF_CMD, drakvuf_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder, start->utime) + 1);
+    sprintf(command, DRAKVUF_CMD, drakvuf_script, rekall_profile, start->cloneID, injection_pid, start->threadid+1, run_folder, start->input, out_folder, start->utime);
     printf("[%i] ** RUNNING COMMAND: %s\n", start->threadid, command);
     g_spawn_command_line_sync(command, NULL, NULL, &rc, NULL);
     g_free(command);
@@ -324,7 +336,8 @@ restart:
 
     printf("[%i] ** DRAKVUF finished with RC %i. Timer: %i\n", start->threadid, rc, start->timer);
 
-    if ( start->timer ) {
+    if ( start->timer )
+    {
         printf("[%i] Finished processing %s\n", start->threadid, start->input);
 
         g_mutex_unlock(&locks[start->threadid]);
@@ -333,105 +346,173 @@ restart:
         g_free(start->clone_name);
         g_free(start);
         return;
-    } else
+    }
+    else
         cleanup(start->cloneID, start->threadid+1);
 
 end:
-    printf("[%i] %s failed to execute on %u because of a timeout, creating new clone\n", start->threadid, start->input, start->cloneID);
-    prepare(NULL, start);
-    goto restart;
+    if ( !shutting_down )
+    {
+        printf("[%i] %s failed to execute on %u because of a timeout, creating new clone\n", start->threadid, start->input, start->cloneID);
+        prepare(start, -1);
+        goto restart;
+    }
 }
 
 int main(int argc, char** argv)
 {
-    DIR *dir;
-    struct dirent *ent;
-    unsigned int i, processed = 0;
+    DIR* dir;
+    struct dirent* ent;
+    unsigned int i, processed = 0, total_processed = 0;
     int ret = 0;
+    struct sigaction act;
+    shutting_down = 0;
 
-    if(argc!=14) {
+    if (argc!=15)
+    {
         printf("Not enough arguments: %i!\n", argc);
-        printf("%s <origin domain name> <domain config> <rekall_profile> <injection pid> <watch folder> <serve folder> <output folder> <max clones> <clone_script> <config_script> <drakvuf_script> <cleanup_script> <tcpdump_script>\n", argv[0]);
+        printf("%s <loop (0) or poll (1)> <origin domain name> <domain config> <rekall_profile> <injection pid> <watch folder> <serve folder> <output folder> <max clones> <clone_script> <config_script> <drakvuf_script> <cleanup_script> <tcpdump_script>\n", argv[0]);
         return 1;
     }
 
+    /* for a clean exit */
+    act.sa_handler = close_handler;
+    act.sa_flags = 0;
+    sigemptyset(&act.sa_mask);
+    sigaction(SIGHUP, &act, NULL);
+    sigaction(SIGTERM, &act, NULL);
+    sigaction(SIGINT, &act, NULL);
+    sigaction(SIGALRM, &act, NULL);
+
     xen_init_interface(&xen);
 
-    domain_name = argv[1];
-    domain_config = argv[2];
-    rekall_profile = argv[3];
-    injection_pid = atoi(argv[4]);
-    in_folder = argv[5];
-    run_folder = argv[6];
-    out_folder = argv[7];
-    threads = atoi(argv[8]);
-    clone_script = argv[9];
-    config_script = argv[10];
-    drakvuf_script = argv[11];
-    cleanup_script = argv[12];
-    tcpdump_script = argv[13];
+    int do_poll = atoi(argv[1]);
+    domain_name = argv[2];
+    domain_config = argv[3];
+    rekall_profile = argv[4];
+    injection_pid = atoi(argv[5]);
+    in_folder = argv[6];
+    run_folder = argv[7];
+    out_folder = argv[8];
+    threads = atoi(argv[9]);
+    clone_script = argv[10];
+    config_script = argv[11];
+    drakvuf_script = argv[12];
+    cleanup_script = argv[13];
+    tcpdump_script = argv[14];
 
-    if (threads > 128) {
+    if (threads > 128)
+    {
         printf("Too many clones requested (max 128 is specified right now)\n");
         return 1;
     }
 
-    g_mutex_init(&prepare_lock);
-    for(i=0;i<threads;i++)
+    for (i=0; i<threads; i++)
         g_mutex_init(&locks[i]);
 
     pool = g_thread_pool_new(run_drakvuf, NULL, threads, TRUE, NULL);
 
-    char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
     int fd = inotify_init();
-    int wd = inotify_add_watch( fd, in_folder, IN_CLOSE_WRITE );
+    int wd = inotify_add_watch(fd, in_folder, IN_CLOSE_WRITE);
+    char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
 
-    do {
+    struct pollfd pollfd =
+    {
+        .fd = fd,
+        .events = POLLIN
+    };
+
+    int threadid = -1;
+
+    do
+    {
         processed = 0;
 
-        if ((dir = opendir (in_folder)) != NULL) {
-            while ((ent = readdir (dir)) != NULL) {
+        while (threadid<0 && !shutting_down)
+        {
+            sleep(1);
+            threadid = find_thread();
+        }
+
+        if ((dir = opendir (in_folder)) != NULL)
+        {
+            while ((ent = readdir (dir)) != NULL && !shutting_down)
+            {
                 if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
                     continue;
 
-                char *command = g_malloc0(snprintf(NULL, 0, "mv %s/%s %s/%s", in_folder, ent->d_name, run_folder, ent->d_name) + 1);
+                char* command = g_malloc0(snprintf(NULL, 0, "mv %s/%s %s/%s", in_folder, ent->d_name, run_folder, ent->d_name) + 1);
                 sprintf(command, "mv %s/%s %s/%s", in_folder, ent->d_name, run_folder, ent->d_name);
                 printf("** MOVING FILE FOR PROCESSING: %s\n", command);
                 g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
                 g_free(command);
 
-                prepare(g_strdup(ent->d_name), NULL);
+                struct start_drakvuf* _start = prepare(NULL, threadid);
+                start(_start, ent->d_name);
+
+                threadid = -1;
                 processed++;
 
             }
             closedir (dir);
-        } else {
+        }
+        else
+        {
             printf("Failed to open target folder!\n");
             ret = 1;
             break;
         }
 
-        if (!processed) {
-            printf("Run folder is empty, waiting for file creation\n");
-            int l = read( fd, buffer, sizeof(struct inotify_event) + NAME_MAX + 1 );
-            if ( l <= 0 ) {
-                ret = 1;
-                break;
-            }
+        if ( processed )
+        {
+            total_processed += processed;
+            printf("Batch processing started %u samples (total %u)\n", processed, total_processed);
         }
-    } while(1);
+
+        if ( !processed && !shutting_down )
+        {
+            if ( do_poll )
+            {
+                do
+                {
+                    int rv = poll (&pollfd, 1, 1000);
+                    if ( rv < 0 )
+                    {
+                        printf("Error polling\n");
+                        ret = 1;
+                        break;
+                    }
+                    if ( rv > 0 && pollfd.revents & POLLIN )
+                    {
+                        if ( read( fd, buffer, sizeof(struct inotify_event) + NAME_MAX + 1 ) < 0 )
+                        {
+                            printf("Error reading inotify event\n");
+                            ret = 1;
+                        }
+                        break;
+                    }
+                }
+                while (!shutting_down && !ret);
+            }
+            else
+                sleep(1);
+        }
+    }
+    while (!shutting_down && !ret);
 
     inotify_rm_watch( fd, wd );
     close(fd);
 
     g_thread_pool_free(pool, FALSE, TRUE);
 
-    g_mutex_clear(&prepare_lock);
-    for(i=0;i<threads;i++)
+    if ( threadid >= 0 )
+        g_mutex_unlock(&locks[threadid]);
+
+    for (i=0; i<threads; i++)
         g_mutex_clear(&locks[i]);
 
     xen_free_interface(xen);
 
-    printf("Finished processing this batch\n");
+    printf("Finished processing %u samples\n", total_processed);
     return ret;
 }

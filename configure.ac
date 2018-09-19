@@ -1,6 +1,6 @@
 #********************IMPORTANT DRAKVUF LICENSE TERMS**********************#
 #                                                                         #
-# DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  #
+# DRAKVUF (C) 2014-2018 Tamas K Lengyel.                                  #
 # Tamas K Lengyel is hereinafter referred to as the author.               #
 # This program is free software; you may redistribute and/or modify it    #
 # under the terms of the GNU General Public License as published by the   #
@@ -103,7 +103,7 @@
 #*************************************************************************#
 
 AC_PREREQ([2.60])
-AC_INIT([DRAKVUF], [0.4-m4_esyscmd_s([git describe --always])], [tamas@tklengyel.com], [], [http://drakvuf.com])
+AC_INIT([DRAKVUF], [0.6-m4_esyscmd_s([git describe --always])], [tamas@tklengyel.com], [], [https://drakvuf.com])
 AM_INIT_AUTOMAKE([1.10 no-define foreign subdir-objects])
 LT_INIT
 AC_CONFIG_HEADERS([config.h])
@@ -111,11 +111,8 @@ AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CC_STDC
 AC_PROG_CXX(clang++)
+AX_REQUIRE_DEFINED([AX_CXX_COMPILE_STDCXX_11])
 AX_CXX_COMPILE_STDCXX_11
-
-if test x$CXX != xclang++; then
-    AC_ERROR([No clang++ found on your system, please install clang!])
-fi
 
 ######################################################
 
@@ -199,6 +196,16 @@ if test x$plugin_debugmon = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_DEBUGMON, 1, "")
 fi
 
+AC_ARG_ENABLE([plugin_delaymon],
+  [AS_HELP_STRING([--disable-plugin-delaymon],
+    [Enable the debug exception watching plugin @<:@yes@:>@])],
+  [plugin_delaymon="$enableval"],
+  [plugin_delaymon="yes"])
+AM_CONDITIONAL([PLUGIN_DELAYMON], [test x$plugin_delaymon = xyes])
+if test x$plugin_delaymon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_DELAYMON, 1, "")
+fi
+
 AC_ARG_ENABLE([plugin_cpuidmon],
   [AS_HELP_STRING([--disable-plugin-cpuidmon],
     [Enable the CPUID watching plugin @<:@yes@:>@])],
@@ -207,6 +214,46 @@ AC_ARG_ENABLE([plugin_cpuidmon],
 AM_CONDITIONAL([PLUGIN_CPUIDMON], [test x$plugin_cpuidmon = xyes])
 if test x$plugin_cpuidmon = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_CPUIDMON, 1, "")
+fi
+
+AC_ARG_ENABLE([plugin_socketmon],
+  [AS_HELP_STRING([--disable-plugin-socketmon],
+    [Enable the network socket watching plugin @<:@yes@:>@])],
+  [plugin_socketmon="$enableval"],
+  [plugin_socketmon="yes"])
+AM_CONDITIONAL([PLUGIN_SOCKETMON], [test x$plugin_socketmon = xyes])
+if test x$plugin_socketmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_SOCKETMON, 1, "")
+fi
+
+AC_ARG_ENABLE([plugin_regmon],
+  [AS_HELP_STRING([--disable-plugin-regmon],
+    [Enable the windows registry watching plugin @<:@yes@:>@])],
+  [plugin_regmon="$enableval"],
+  [plugin_regmon="yes"])
+AM_CONDITIONAL([PLUGIN_REGMON], [test x$plugin_regmon = xyes])
+if test x$plugin_regmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_REGMON, 1, "")
+fi
+
+AC_ARG_ENABLE([plugin_procmon],
+  [AS_HELP_STRING([--disable-plugin-procmon],
+    [Enable the windows process lifecycle watching plugin @<:@yes@:>@])],
+  [plugin_procmon="$enableval"],
+  [plugin_procmon="yes"])
+AM_CONDITIONAL([PLUGIN_PROCMON], [test x$plugin_procmon = xyes])
+if test x$plugin_procmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_PROCMON, 1, "")
+fi
+
+AC_ARG_ENABLE([plugin_bsodmon],
+  [AS_HELP_STRING([--disable-plugin-bsodmon],
+    [Enable the windows kernel bugcheck watching plugin @<:@yes@:>@])],
+  [plugin_bsodmon="$enableval"],
+  [plugin_bsodmon="yes"])
+AM_CONDITIONAL([PLUGIN_BSODMON], [test x$plugin_bsodmon = xyes])
+if test x$plugin_bsodmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_BSODMON, 1, "")
 fi
 
 #####################################################
@@ -224,6 +271,12 @@ AC_ARG_ENABLE([debug],
   [debug="$enableval"],
   [debug="no"])
 AM_CONDITIONAL([DEBUG], [test x$debug = xyes])
+
+AC_ARG_WITH([stdlib],
+  [AS_HELP_STRING([--with-stdlib=LIB], [specify the C++ standard library to use [default=system]])],
+  [], [with_stdlib=system])
+AS_IF([test "x$with_stdlib" != "xsystem"],
+  [CXXFLAGS="$CXXFLAGS -stdlib=$with_stdlib"])
 
 #####################################################
 # AUTOHARDEN START
@@ -346,31 +399,6 @@ AC_CHECK_LIB([xentoollog], [xtl_logger_destroy])
 
 #####################################################
 
-if test x$plugin_filedelete = xyes; then
-    # Check for Python
-    AM_PATH_PYTHON([2.7])
-    if test "x$PYTHON" != "x"; then
-        AC_DEFINE_UNQUOTED(PYTHON, "$PYTHON", "Python found")
-        AX_PYTHON_MODULE([pyvmi])
-
-        if test "x$HAVE_PYMOD_PYVMI" = "xyes"; then
-            AC_PATH_PROG(VOLATILITY, vol.py)
-
-            if test "x$VOLATILITY" != "x"; then
-                AC_DEFINE_UNQUOTED(VOLATILITY, "$VOLATILITY", "Volatility vol.py found")
-            else
-                plugin_filedelete="yes (log only)"
-            fi
-        else
-            plugin_filedelete="yes (log only)"
-        fi
-    else
-        plugin_filedelete="yes (log only)"
-    fi
-fi
-
-#####################################################
-
 AC_CONFIG_FILES([Makefile src/Makefile
                  src/libdrakvuf/Makefile
                  src/libinjector/Makefile
@@ -399,4 +427,8 @@ Exmon:      $plugin_exmon
 SSDTmon:    $plugin_ssdtmon
 CPUIDmon:   $plugin_cpuidmon
 Debugmon:   $plugin_debugmon
+Socketmon:  $plugin_socketmon
+Regmon:     $plugin_regmon
+Procmon:    $plugin_procmon
+BSODmon:    $plugin_bsodmon
 -------------------------------------------------------------------------------])

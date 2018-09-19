@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -112,12 +112,14 @@ static gpointer timer(gpointer data)
     g_mutex_lock(&drakvuf->loop_signal);
     g_mutex_unlock(&drakvuf->loop_signal);
 
-    while(drakvuf->timeout && !drakvuf->interrupted) {
+    while (drakvuf->timeout && !drakvuf->interrupted)
+    {
         sleep(1);
         --drakvuf->timeout;
     }
 
-    if (!drakvuf->interrupted) {
+    if (!drakvuf->interrupted)
+    {
         drakvuf->interrupt(-1);
     }
 
@@ -125,32 +127,68 @@ static gpointer timer(gpointer data)
     return NULL;
 }
 
-int drakvuf_c::start_plugins(const bool* plugin_list, const char *dump_folder, bool cpuid_stealth)
+int drakvuf_c::start_plugins(const bool* plugin_list,
+                             const char* dump_folder,          // PLUGIN_FILEDELETE
+                             bool dump_modified_files,         // PLUGIN_FILEDELETE
+                             bool filedelete_use_injector,     // PLUGIN_FILEDELETE
+                             bool cpuid_stealth,               // PLUGIN_CPUIDMON
+                             const char* tcpip_profile,        // PLUGIN_SOCKETMON
+                             const char* syscalls_filter_file, // PLUGIN_SYSCALLS
+                             bool abort_on_bsod )              // PLUGIN_BSODMON
 {
     int i, rc;
 
-    for(i=0;i<__DRAKVUF_PLUGIN_LIST_MAX;i++)
+    for (i=0; i<__DRAKVUF_PLUGIN_LIST_MAX; i++)
     {
-        if (plugin_list[i]) {
-            switch ((drakvuf_plugin_t)i) {
-            case PLUGIN_FILEDELETE:
+        if (plugin_list[i])
+        {
+            switch ((drakvuf_plugin_t)i)
             {
-                struct filedelete_config c = {
-                    .rekall_profile = this->rekall_profile,
-                    .dump_folder = dump_folder
-                };
+                case PLUGIN_FILEDELETE:
+                {
+                    struct filedelete_config c =
+                    {
+                        .dump_folder = dump_folder,
+                        .dump_modified_files = dump_modified_files,
+                        .filedelete_use_injector = filedelete_use_injector,
+                    };
 
-                rc = this->plugins->start((drakvuf_plugin_t)i, &c);
-                break;
-            }
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &c);
+                    break;
+                }
 
-            case PLUGIN_CPUIDMON:
-                rc = this->plugins->start((drakvuf_plugin_t)i, &cpuid_stealth);
-                break;
+                case PLUGIN_CPUIDMON:
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &cpuid_stealth);
+                    break;
 
-            default:
-                rc = this->plugins->start((drakvuf_plugin_t)i, this->rekall_profile);
-                break;
+                case PLUGIN_SOCKETMON:
+                {
+                    struct socketmon_config c =
+                    {
+                        .tcpip_profile = tcpip_profile,
+                        .tcpip_profile_json = json_object_from_file(tcpip_profile)
+                    };
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &c);
+                    break;
+                }
+
+                case PLUGIN_SYSCALLS:
+                {
+                    struct syscalls_config c =
+                    {
+                        .syscalls_filter_file = syscalls_filter_file
+                    };
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &c);
+                    break;
+                }
+
+                case PLUGIN_BSODMON:
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &abort_on_bsod);
+                    break;
+
+                default:
+                    rc = this->plugins->start((drakvuf_plugin_t)i, NULL);
+                    break;
             };
 
             if ( rc < 0 )
@@ -162,7 +200,7 @@ int drakvuf_c::start_plugins(const bool* plugin_list, const char *dump_folder, b
 }
 
 drakvuf_c::drakvuf_c(const char* domain,
-                     const char *rekall_profile,
+                     const char* rekall_profile,
                      const output_format_t output,
                      const int timeout,
                      const bool verbose,
@@ -171,8 +209,9 @@ drakvuf_c::drakvuf_c(const char* domain,
     this->drakvuf = NULL;
     this->interrupted = 0;
     this->timeout = timeout;
-    this->rekall_profile = rekall_profile;
+    this->process_start_timeout = timeout;
     this->leave_paused = leave_paused;
+    this->process_start_detected = 0;
 
     if (!drakvuf_init(&this->drakvuf, domain, rekall_profile, verbose))
         throw -1;
@@ -181,8 +220,10 @@ drakvuf_c::drakvuf_c(const char* domain,
 
     g_mutex_init(&this->loop_signal);
     g_mutex_lock(&this->loop_signal);
+    g_mutex_init(&this->loop_signal2);
+    g_mutex_lock(&this->loop_signal2);
 
-    if(timeout > 0)
+    if (timeout > 0)
         this->timeout_thread = g_thread_new(NULL, timer, (void*)this);
 
     this->plugins = new drakvuf_plugins(this->drakvuf, output, this->os);
@@ -196,6 +237,9 @@ drakvuf_c::~drakvuf_c()
     g_mutex_trylock(&this->loop_signal);
     g_mutex_unlock(&this->loop_signal);
     g_mutex_clear(&this->loop_signal);
+    g_mutex_trylock(&this->loop_signal2);
+    g_mutex_unlock(&this->loop_signal2);
+    g_mutex_clear(&this->loop_signal2);
 
     if (this->drakvuf)
         drakvuf_close(this->drakvuf, this->leave_paused);
@@ -203,7 +247,7 @@ drakvuf_c::~drakvuf_c()
     if (this->plugins)
         delete this->plugins;
 
-    if(this->timeout_thread)
+    if (this->timeout_thread)
         g_thread_join(this->timeout_thread);
 }
 
@@ -215,6 +259,7 @@ void drakvuf_c::interrupt(int signal)
 
 void drakvuf_c::loop()
 {
+    this->interrupted = 0;
     g_mutex_unlock(&this->loop_signal);
     drakvuf_loop(this->drakvuf);
 }
@@ -229,10 +274,76 @@ void drakvuf_c::resume()
     drakvuf_resume(this->drakvuf);
 }
 
-int drakvuf_c::inject_cmd(vmi_pid_t injection_pid, uint32_t injection_tid, const char *inject_cmd)
+int drakvuf_c::inject_cmd(vmi_pid_t injection_pid, uint32_t injection_tid, const char* inject_cmd, const char* cwd, injection_method_t method, output_format_t format, const char* binary_path, const char* target_process)
 {
-    int rc = injector_start_app(this->drakvuf, injection_pid, injection_tid, inject_cmd);
+    int rc = injector_start_app(this->drakvuf, injection_pid, injection_tid, inject_cmd, cwd, method, format, binary_path, target_process);
     if (!rc)
         fprintf(stderr, "Process startup failed\n");
     return rc;
+}
+
+static gpointer timer2(gpointer data)
+{
+    drakvuf_c* drakvuf = (drakvuf_c*)data;
+
+    /* Wait for the loop to start */
+    g_mutex_lock(&drakvuf->loop_signal2);
+    g_mutex_unlock(&drakvuf->loop_signal2);
+
+    while (drakvuf->process_start_timeout && !drakvuf->interrupted)
+    {
+        sleep(1);
+        --drakvuf->process_start_timeout;
+    }
+
+    if (!drakvuf->interrupted)
+    {
+        drakvuf->interrupt(-1);
+    }
+
+    g_thread_exit(NULL);
+    return NULL;
+}
+
+static event_response_t wait_for_process_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    UNUSED(drakvuf);
+    drakvuf_c* dc = (drakvuf_c*)info->trap->data;
+
+    const char* begin_name = strrchr(info->proc_data.name, '\\');
+
+    if ( !strcmp(begin_name ? begin_name + 1 : info->proc_data.name, dc->process_start_name) )
+    {
+        dc->interrupt(-1);
+        dc->process_start_detected = 1;
+    }
+
+    return 0;
+}
+
+bool drakvuf_c::wait_for_process(const char* processname)
+{
+    drakvuf_trap_t trap =
+    {
+        .cb = wait_for_process_cb,
+        .type = REGISTER,
+        .reg = CR3,
+        .data = (void*)this
+    };
+
+    if ( !drakvuf_add_trap(this->drakvuf,&trap) )
+        return 0;
+
+    this->timeout_thread2 = g_thread_new(NULL, timer2, (void*)this);
+
+    this->process_start_name = processname;
+
+    g_mutex_unlock(&this->loop_signal2);
+    drakvuf_loop(this->drakvuf);
+
+    drakvuf_remove_trap(this->drakvuf, &trap, NULL);
+
+    g_thread_join(this->timeout_thread2);
+
+    return this->process_start_detected;
 }
